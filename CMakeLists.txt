@@ -41,7 +41,7 @@ add_definitions(-DAPP_GIT_VERSION="${GIT_VERSION}")
 
 message("-- Version: ${BoldGreen}${GIT_VERSION}${White}")
 
-include_directories(third_party/cpp-httplib/httplib.h)
+include_directories(third_party/cpp-httplib/)
 
 # Create executable
 add_executable(logloader

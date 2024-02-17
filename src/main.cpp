@@ -15,52 +15,27 @@ int main(int argc, char* argv[])
 
 	program.add_argument("--description")
 	.help("Log description")
-	.default_value(std::string(""))
+	.default_value(std::string("no description provided"))
 	.action([](const std::string & value) { return value; });
 
 	program.add_argument("--feedback")
 	.help("Additional feedback")
-	.default_value(std::string(""))
-	.action([](const std::string & value) { return value; });
-
-	program.add_argument("--source")
-	.help("Log source (E.g., CI)")
-	.default_value(std::string("webui"))
+	.default_value(std::string("no feedback provided"))
 	.action([](const std::string & value) { return value; });
 
 	program.add_argument("--email")
 	.help("Your e-mail (to send the upload link)")
-	.default_value(std::string(""))
+	.default_value(std::string("dahl.jakejacob@gmail.com"))
 	.action([](const std::string & value) { return value; });
-
-	program.add_argument("--type")
-	.help("The upload type (either flightreport or personal)")
-	.default_value(std::string("flightreport"))
-	.action([](const std::string & value) { return value; });
-
-	program.add_argument("--videoUrl")
-	.help("An Url to a video (only used for type flightreport)")
-	.default_value(std::string(""))
-	.action([](const std::string & value) { return value; });
-
-	program.add_argument("--rating")
-	.help("A rating for the flight (only used for type flightreport)")
-	.default_value(std::string("notset"))
-	.action([](const std::string & value) { return value; });
-
-	program.add_argument("--windSpeed")
-	.help("A wind speed category for the flight (only used for flightreport)")
-	.default_value(-1)
-	.action([](const std::string & value) { return std::stoi(value); });
 
 	program.add_argument("--public")
 	.help("Whether the log is uploaded as public (only used for flightreport)")
 	.default_value(true)
 	.implicit_value(true);
 
-	program.add_argument("files")
-	.help("ULog file(s) to upload")
-	.remaining();
+	program.add_argument("file")
+	.help("ULog file to upload")
+	.default_value(std::string("test.ulg"));
 
 	try {
 		program.parse_args(argc, argv);
@@ -75,42 +50,42 @@ int main(int argc, char* argv[])
 	std::string description = program.get<std::string>("--description");
 	// Continue for other arguments
 
-	auto files = program.get<std::vector<std::string>>("files");
+	std::string file_path = program.get<std::string>("file");
 
-	if (files.empty()) {
-		std::cerr << "No ULog files specified for upload." << std::endl;
+	if (file_path.empty()) {
+		std::cerr << "No ULog file specified for upload." << std::endl;
 		return 1;
 	}
 
-	httplib::Client cli("https://logs.px4.io");
+	httplib::Client cli("http://logs.px4.io");
 
-	for (const auto& file_path : files) {
-		if (!quiet) {
-			std::cout << "Uploading " << file_path << "..." << std::endl;
-		}
+	if (!quiet) {
+		std::cout << "Uploading " << file_path << "..." << std::endl;
+	}
 
-		std::ifstream file(file_path, std::ios::binary);
+	std::ifstream file(file_path, std::ios::binary);
 
-		if (!file) {
-			std::cerr << "Could not open file " << file_path << std::endl;
-			continue;
-		}
+	if (!file) {
+		std::cerr << "Could not open file " << file_path << std::endl;
+		return 1;
+	}
 
-		std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-		httplib::MultipartFormDataItems items = {
-			{"type", program.get<std::string>("--type"), "", ""},
-			{"description", description, "", ""},
-			// Add other form fields here
-			{"file", content, file_path, "application/octet-stream"}
-		};
-		auto res = cli.Post("/upload", items);
+	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+	httplib::MultipartFormDataItems items = {
+		{"type", "flightreport", "", ""},
+		{"description", description, "", ""},
+		{"feedback", program.get<std::string>("--feedback"), "", ""},
+		{"email", program.get<std::string>("--email"), "", ""},
+		{"public", program.get<bool>("--public") ? "true" : "false", "", ""},
+		{"file", content, file_path, "application/octet-stream"}
+	};
+	auto res = cli.Post("/upload", items);
 
-		if (res && res->status == 302) { // Assuming 302 as a successful upload indicator
-			std::cout << "Uploaded successfully. URL: " << res->get_header_value("Location") << std::endl;
+	if (res && res->status == 302) { // Assuming 302 as a successful upload indicator
+		std::cout << "Uploaded successfully. URL: " << res->get_header_value("Location") << std::endl;
 
-		} else {
-			std::cerr << "Failed to upload " << file_path << std::endl;
-		}
+	} else {
+		std::cerr << "Failed to upload " << file_path << std::endl;
 	}
 
 	return 0;
