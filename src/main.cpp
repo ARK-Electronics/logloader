@@ -1,8 +1,10 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <httplib.h>
+#include <vector>
 #include <argparse/argparse.hpp>
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#include <httplib.h>
 
 int main(int argc, char* argv[])
 {
@@ -15,18 +17,36 @@ int main(int argc, char* argv[])
 
 	program.add_argument("--description")
 	.help("Log description")
-	.default_value(std::string("no description provided"))
-	.action([](const std::string & value) { return value; });
+	.default_value(std::string("This is a test"));
 
 	program.add_argument("--feedback")
 	.help("Additional feedback")
-	.default_value(std::string("no feedback provided"))
-	.action([](const std::string & value) { return value; });
+	.default_value(std::string("lol"));
+
+	program.add_argument("--source")
+	.help("Log source (Eg. CI)")
+	.default_value(std::string("webui"));
 
 	program.add_argument("--email")
 	.help("Your e-mail (to send the upload link)")
-	.default_value(std::string("dahl.jakejacob@gmail.com"))
-	.action([](const std::string & value) { return value; });
+	.default_value(std::string("dahl.jakejacob@gmail.com"));
+
+	program.add_argument("--type")
+	.help("The upload type (either flightreport or personal)")
+	.default_value(std::string("flightreport"));
+
+	program.add_argument("--videoUrl")
+	.help("An URL to a video (only used for type flightreport)")
+	.default_value(std::string("none"));
+
+	program.add_argument("--rating")
+	.help("A rating for the flight (only used for type flightreport)")
+	.default_value(std::string("none"));
+
+	program.add_argument("--windSpeed")
+	.help("A wind speed category for the flight (only used for flightreport)")
+	.default_value(0)
+	.scan<'i', int>();
 
 	program.add_argument("--public")
 	.help("Whether the log is uploaded as public (only used for flightreport)")
@@ -35,7 +55,7 @@ int main(int argc, char* argv[])
 
 	program.add_argument("file")
 	.help("ULog file to upload")
-	.default_value(std::string("test.ulg"));
+	.required();
 
 	try {
 		program.parse_args(argc, argv);
@@ -46,22 +66,28 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	bool quiet = program.get<bool>("--quiet");
-	std::string description = program.get<std::string>("--description");
-	// Continue for other arguments
-
 	std::string file_path = program.get<std::string>("file");
+	std::string description = program.get("--description");
+	std::string feedback = program.get("--feedback");
+	std::string email = program.get("--email");
+	std::string source = program.get("--source");
+	std::string type = program.get("--type");
+	bool is_public = program.get<bool>("--public");
+	int windSpeed = program.get<int>("--windSpeed");
+	std::string videoUrl = program.get("--videoUrl");
+	std::string rating = program.get("--rating");
 
-	if (file_path.empty()) {
-		std::cerr << "No ULog file specified for upload." << std::endl;
-		return 1;
-	}
-
-	httplib::Client cli("http://logs.px4.io");
-
-	if (!quiet) {
-		std::cout << "Uploading " << file_path << "..." << std::endl;
-	}
+	httplib::MultipartFormDataItems items = {
+		{"type", type, "", ""},
+		{"description", description, "", ""},
+		{"feedback", feedback, "", ""},
+		{"email", email, "", ""},
+		{"source", source, "", ""},
+		{"videoUrl", videoUrl, "", ""},
+		{"rating", rating, "", ""},
+		{"windSpeed", std::to_string(windSpeed), "", ""},
+		{"public", is_public ? "true" : "false", "", ""}
+	};
 
 	std::ifstream file(file_path, std::ios::binary);
 
@@ -71,21 +97,18 @@ int main(int argc, char* argv[])
 	}
 
 	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-	httplib::MultipartFormDataItems items = {
-		{"type", "flightreport", "", ""},
-		{"description", description, "", ""},
-		{"feedback", program.get<std::string>("--feedback"), "", ""},
-		{"email", program.get<std::string>("--email"), "", ""},
-		{"public", program.get<bool>("--public") ? "true" : "false", "", ""},
-		{"file", content, file_path, "application/octet-stream"}
-	};
+	items.push_back({"filearg", content, file_path, "application/octet-stream"});
+
+	std::cout << "Uploading..." << std::endl;
+	httplib::SSLClient cli("logs.px4.io");
+
 	auto res = cli.Post("/upload", items);
 
-	if (res && res->status == 302) { // Assuming 302 as a successful upload indicator
+	if (res && res->status == 302) {
 		std::cout << "Uploaded successfully. URL: " << res->get_header_value("Location") << std::endl;
 
 	} else {
-		std::cerr << "Failed to upload " << file_path << std::endl;
+		std::cerr << "Failed to upload " << file_path << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 	}
 
 	return 0;

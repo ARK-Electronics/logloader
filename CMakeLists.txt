@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.1 LANGUAGES CXX)
 
+find_package(OpenSSL REQUIRED)
+
 string(ASCII 27 Esc)
 set(White       "${Esc}[m")
 set(Red         "${Esc}[31m")
@@ -12,7 +14,6 @@ set(Green       "${Esc}[32m")
 set(Yellow      "${Esc}[33m")
 set(Blue        "${Esc}[34m")
 set(BoldGreen   "${Esc}[1;32m")
-
 
 ##### Add libraries
 add_subdirectory(third_party/argparse)
@@ -50,4 +51,6 @@ add_executable(logloader
 
 target_link_libraries(logloader
     argparse
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
