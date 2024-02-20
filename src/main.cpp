@@ -2,6 +2,9 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <filesystem>
+#include <regex>
+#include <set>
 #include <argparse/argparse.hpp>
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
@@ -13,14 +16,24 @@
 using namespace mavsdk;
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
+namespace fs = std::filesystem;
 
+bool download_log(const LogFiles::Entry& entry, const std::string& filepath);
 bool send_log_to_server(const std::string& email, const std::string& filepath);
+std::string find_most_recent_log(const std::string& directory);
+void mark_log_as_uploaded(const std::string& log);
+bool has_log_been_uploaded(const std::string& log);
+
+std::shared_ptr<LogFiles> _log_files;
+
+static std::string LOG_DIRECTORY = "logs/";
 
 int main(int argc, char* argv[])
 {
 	argparse::ArgumentParser parser("logloader");
 	parser.add_argument("--url").help("Connection URL, eg: udp://192.168.1.34:14550").default_value(std::string("udp://192.168.1.34:14550"));
 	parser.add_argument("--email").help("Your e-mail to send the upload link").default_value(std::string("dahl.jakejacob@gmail.com"));
+	parser.add_argument("--logdir").help("Directory to store and look for logs").default_value(LOG_DIRECTORY);
 
 	try {
 		parser.parse_args(argc, argv);
@@ -34,6 +47,7 @@ int main(int argc, char* argv[])
 
 	std::string email = parser.get("--email");
 	std::string url = parser.get("--url");
+	std::string logdir = parser.get("--logdir");
 
 	// MAVSDK stuff
 	Mavsdk mavsdk { Mavsdk::Configuration{ Mavsdk::ComponentType::GroundStation } };
@@ -51,68 +65,110 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	auto log_files = LogFiles { system.value() };
-	auto entries_result = log_files.get_entries();
+	_log_files = std::make_shared<LogFiles>(system.value());
+	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != LogFiles::Result::Success) {
 		std::cerr << "Couldn't get logs" << std::endl;
 		return 1;
 	}
 
-
 	std::vector<LogFiles::Entry> entries = entries_result.second;
 
-	size_t total_size = 0;
+	// Ensure the logs directory exists
+	fs::create_directories(logdir);
 
-	for (auto& e : entries) {
-		// std::cout << "Got log file with ID " << e.id << " and date " << e.date << " and size " << e.size_bytes << std::endl;
-		total_size += e.size_bytes;
-	}
+	std::string most_recent_log = find_most_recent_log(logdir);
 
-	std::cout << "Total size: " << total_size << std::endl;
-	std::cout << "Time: " << total_size / 600000 << std::endl;
+	std::cout << "Most recent: " << most_recent_log << std::endl;
 
-	// Look at list of already downloaded logs in the folder. If there are any logs in
-	// the download folder, only download logs with a date greater than the most recent log.
-	bool folder_has_logs = false;
+	// MAVSDK setup and log retrieval omitted for brevity, assume setup is successful and entries contains log entries
 
-
-	if (folder_has_logs) {
-		// Download all logs from the drone that have a greater date than the most recent log
-		std::cout << "We got some logs now" << std::endl;
+	if (most_recent_log.empty()) {
+		// No valid logs locally, just download the latest from the FC
+		std::cout << "No local logs found, downloading latest" << std::endl;
+		LogFiles::Entry entry = entries.back();
+		auto log_path = logdir + entry.date + ".ulg";
+		download_log(entry, log_path);
 
 	} else {
-		// Download only the most recent log from the drone
-		LogFiles::Entry entry = entries.back();
+		// Check which logs need to be downloaded
+		for (auto& entry : entries) {
+			auto log_path = logdir + entry.date + ".ulg";
 
-		auto prom = std::promise<LogFiles::Result> {};
-		auto future_result = prom.get_future();
-
-		auto log_path = std::string("logs/") + entry.date + ".ulg";
-
-		std::cout << "Downloading " << entry.size_bytes << " bytes -- " << entry.date + ".ulg";
-
-		log_files.download_log_file_async(
-			entry,
-			log_path,
-		[&prom](LogFiles::Result result, LogFiles::ProgressData progress) {
-			if (result != LogFiles::Result::Next) {
-				prom.set_value(result);
+			if (!fs::exists(log_path) && entry.date > most_recent_log) {
+				download_log(entry, log_path);
 			}
-		});
-
-		auto result = future_result.get();
-
-		if (result == LogFiles::Result::Success) {
-			bool success = send_log_to_server(email, log_path);
 		}
+	}
 
-		else {
-			std::cerr << "LogFiles::download_log_file failed: " << result << std::endl;
+	std::vector<std::string> logs_to_upload;
+
+	for (const auto& it : fs::directory_iterator(logdir)) {
+		std::string log_file = it.path();
+
+		if (!has_log_been_uploaded(log_file)) {
+			logs_to_upload.push_back(log_file);
+		}
+	}
+
+	std::cout << "Uploading " << logs_to_upload.size() << " logs" << std::endl;
+
+	for (const auto& log : logs_to_upload) {
+		std::cout << log << std::endl;
+	}
+
+	for (const auto& log : logs_to_upload) {
+		if (send_log_to_server(email, log)) {
+			std::cout << "Uploaded success: -- " << log << std::endl;
+			mark_log_as_uploaded(log);
 		}
 	}
 
 	return 0;
+}
+
+bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
+{
+	auto prom = std::promise<LogFiles::Result> {};
+	auto future_result = prom.get_future();
+
+	std::cout << "Downloading " << entry.size_bytes << " bytes -- " << entry.date + ".ulg";
+
+	_log_files->download_log_file_async(
+		entry,
+		log_path,
+	[&prom](LogFiles::Result result, LogFiles::ProgressData progress) {
+		if (result != LogFiles::Result::Next) {
+			prom.set_value(result);
+		}
+	});
+
+	auto result = future_result.get();
+
+	return result == LogFiles::Result::Success;
+}
+
+std::string find_most_recent_log(const std::string& directory)
+{
+	// Updated regex pattern to match "yyyy-mm-ddThh:mm:ssZ.ulg" format
+	std::regex log_pattern("^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg$");
+	std::string latest_date_time;
+
+	for (const auto& entry : fs::directory_iterator(directory)) {
+		std::string filename = entry.path().filename().string();
+		std::smatch matches;
+
+		if (std::regex_search(filename, matches, log_pattern) && matches.size() > 1) {
+			std::string log_date_time = matches[1].str();
+
+			if (log_date_time > latest_date_time) {
+				latest_date_time = log_date_time;
+			}
+		}
+	}
+
+	return latest_date_time;
 }
 
 bool send_log_to_server(const std::string& email, const std::string& filepath)
@@ -142,7 +198,7 @@ bool send_log_to_server(const std::string& email, const std::string& filepath)
 	items.push_back({"filearg", content, filepath, "application/octet-stream"});
 
 	// Post multi-part form
-	std::cout << "Uploading..." << std::endl;
+	std::cout << "Uploading: " << filepath << std::endl;
 	httplib::SSLClient cli("logs.px4.io");
 
 	auto res = cli.Post("/upload", items);
@@ -150,7 +206,6 @@ bool send_log_to_server(const std::string& email, const std::string& filepath)
 	if (res && res->status == 302) {
 		std::cout << "Uploaded successfully. URL: " << res->get_header_value("Location") << std::endl;
 		return true;
-
 	}
 
 	else {
@@ -159,3 +214,25 @@ bool send_log_to_server(const std::string& email, const std::string& filepath)
 	}
 }
 
+bool has_log_been_uploaded(const std::string& log)
+{
+	std::ifstream file("uploaded_logs.txt");
+	std::string line;
+
+	while (std::getline(file, line)) {
+		if (line == log) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void mark_log_as_uploaded(const std::string& log)
+{
+	std::ofstream file("uploaded_logs.txt", std::ios::app);
+
+	if (file) {
+		file << log << std::endl;
+	}
+}

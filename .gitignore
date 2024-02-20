@@ -1,2 +1,4 @@
 build/
 test.ulg
+logs/
+uploaded_logs.txt
