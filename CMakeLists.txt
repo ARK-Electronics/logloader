@@ -15,9 +15,6 @@ set(Yellow      "${Esc}[33m")
 set(Blue        "${Esc}[34m")
 set(BoldGreen   "${Esc}[1;32m")
 
-##### Add libraries
-add_subdirectory(third_party/argparse)
-
 # MAVSDK
 list(APPEND CMAKE_PREFIX_PATH "/home/jake/code/jake/MAVSDK/install")
 find_package(MAVSDK REQUIRED)
@@ -46,7 +43,10 @@ add_definitions(-DAPP_GIT_VERSION="${GIT_VERSION}")
 
 message("-- Version: ${BoldGreen}${GIT_VERSION}${White}")
 
+# Add header only libraries
 include_directories(third_party/cpp-httplib/)
+include_directories(third_party/tomlplusplus/)
+
 
 # Create executable
 add_executable(logloader
@@ -54,7 +54,6 @@ add_executable(logloader
 )
 
 target_link_libraries(logloader
-    argparse
     OpenSSL::SSL
     OpenSSL::Crypto
     MAVSDK::mavsdk

@@ -5,7 +5,8 @@
 #include <filesystem>
 #include <regex>
 #include <set>
-#include <argparse/argparse.hpp>
+#include <toml.hpp>
+
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
 
@@ -30,28 +31,38 @@ static std::string LOG_DIRECTORY = "logs/";
 
 int main(int argc, char* argv[])
 {
-	argparse::ArgumentParser parser("logloader");
-	parser.add_argument("--url").help("Connection URL, eg: udp://192.168.1.34:14550").default_value(std::string("udp://192.168.1.34:14550"));
-	parser.add_argument("--email").help("Your e-mail to send the upload link").default_value(std::string("dahl.jakejacob@gmail.com"));
-	parser.add_argument("--logdir").help("Directory to store and look for logs").default_value(LOG_DIRECTORY);
+	std::string title;
+	std::string version;
+	std::string connection_url;
+	std::string logdir;
+	std::string email;
 
 	try {
-		parser.parse_args(argc, argv);
-	}
+		auto config = toml::parse_file("config.toml");
+		title = config["title"].value_or("logloader");
+		version = config["version"].value_or("0.0.0");
+		connection_url = config["connection_url"].value_or("0.0.0");
+		logdir = config["logdir"].value_or("logs/");
+		email = config["email"].value_or("");
 
-	catch (const std::runtime_error& err) {
-		std::cerr << err.what() << std::endl;
-		std::cerr << parser;
+	} catch (const toml::parse_error& err) {
+		std::cerr << "Parsing failed:\n" << err << "\n";
+		return 1;
+
+	} catch (const std::exception& err) {
+		std::cerr << "Error: " << err.what() << "\n";
 		return 1;
 	}
 
-	std::string email = parser.get("--email");
-	std::string url = parser.get("--url");
-	std::string logdir = parser.get("--logdir");
+	std::cout << "Application: " << title << std::endl;
+	std::cout << "Version: " << version << std::endl;
+	std::cout << "connection_url: " << connection_url << std::endl;
+	std::cout << "logdir: " << logdir << std::endl;
+	std::cout << "email: " << email << std::endl;
 
 	// MAVSDK stuff
 	Mavsdk mavsdk { Mavsdk::Configuration{ Mavsdk::ComponentType::GroundStation } };
-	auto result = mavsdk.add_any_connection(url);
+	auto result = mavsdk.add_any_connection(connection_url);
 
 	if (result != ConnectionResult::Success) {
 		std::cerr << "Connection failed: " << result << std::endl;
@@ -82,10 +93,7 @@ int main(int argc, char* argv[])
 
 	std::cout << "Most recent: " << most_recent_log << std::endl;
 
-	// MAVSDK setup and log retrieval omitted for brevity, assume setup is successful and entries contains log entries
-
 	if (most_recent_log.empty()) {
-		// No valid logs locally, just download the latest from the FC
 		std::cout << "No local logs found, downloading latest" << std::endl;
 		LogFiles::Entry entry = entries.back();
 		auto log_path = logdir + entry.date + ".ulg";
@@ -102,21 +110,20 @@ int main(int argc, char* argv[])
 		}
 	}
 
+	// Store list of logs to upload
+	std::cout << "Logs to upload" << std::endl;
 	std::vector<std::string> logs_to_upload;
 
 	for (const auto& it : fs::directory_iterator(logdir)) {
-		std::string log_file = it.path();
+		std::string log = it.path();
 
-		if (!has_log_been_uploaded(log_file)) {
-			logs_to_upload.push_back(log_file);
+		if (!has_log_been_uploaded(log)) {
+			logs_to_upload.push_back(log);
+			std::cout << log << std::endl;
 		}
 	}
 
 	std::cout << "Uploading " << logs_to_upload.size() << " logs" << std::endl;
-
-	for (const auto& log : logs_to_upload) {
-		std::cout << log << std::endl;
-	}
 
 	for (const auto& log : logs_to_upload) {
 		if (send_log_to_server(email, log)) {

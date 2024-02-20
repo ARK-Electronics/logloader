@@ -1,5 +1,5 @@
 ## Load ur logs
-Downloads PX4 .ulg logs from the SD card and uploads to Flight Review
+Downloads PX4 .ulg logs from the SD card and uploads to Flight Review. Use config.toml for specifying users email, connection URL, and logging directory.
 
 - Downloads the most recently recorded log if no logs are found locally.
 - Downloads logs with a datetime greater than the greatest log in the logs/ directory.
@@ -12,5 +12,5 @@ make
 
 ### Run
 ```bash
-./build/logloader --email <your@email.com>
+./build/logloader
 ```
