@@ -123,7 +123,12 @@ int main(int argc, char* argv[])
 
 			std::cout << entry.date << std::endl;
 
-			if (!fs::exists(log_path) && entry.date > most_recent_log) {
+			if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
+				std::cout << "File exists but size don't match!" << std::endl;
+				fs::remove(log_path);
+				download_log(entry, log_path);
+
+			} else if (!fs::exists(log_path) && entry.date > most_recent_log) {
 				download_log(entry, log_path);
 			}
 		}
@@ -138,7 +143,7 @@ int main(int argc, char* argv[])
 
 		if (!has_log_been_uploaded(logpath)) {
 			logs_to_upload.push_back(logpath);
-			std::cout << logpath << std::endl;
+			std::cout << logpath << std::endl << std::flush;
 		}
 	}
 
@@ -170,7 +175,7 @@ bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
 			prom.set_value(result);
 		}
 
-		std::cout << "Downloading log: " << int(progress.progress * 100) << "%" << std::endl;
+		std::cout << "\rDownloading log: " << int(progress.progress * 100) << "%" << std::flush;
 	});
 
 	auto result = future_result.get();
