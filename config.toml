@@ -1,5 +1,5 @@
-title = "logloader"
+name = "logloader"
 version = "1.0.0"
 connection_url = "udp://192.168.1.34:14550"
-logdir = "/tmp/mavlogs/"
+logdir = "logs"
 email = "dahl.jakejacob@gmail.com"

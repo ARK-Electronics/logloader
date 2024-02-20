@@ -3,6 +3,8 @@
 #include <sstream>
 #include <vector>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <regex>
 #include <set>
 #include <toml.hpp>
@@ -12,7 +14,7 @@
 
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/log_files/log_files.h>
-#include <future>
+#include <mavsdk/log_callback.h>
 
 using namespace mavsdk;
 using std::chrono::seconds;
@@ -22,8 +24,8 @@ namespace fs = std::filesystem;
 bool download_log(const LogFiles::Entry& entry, const std::string& filepath);
 bool send_log_to_server(const std::string& email, const std::string& filepath);
 std::string find_most_recent_log(const std::string& directory);
-void mark_log_as_uploaded(const std::string& log);
-bool has_log_been_uploaded(const std::string& log);
+void mark_log_as_uploaded(const std::string& filepath);
+bool has_log_been_uploaded(const std::string& filepath);
 
 std::shared_ptr<LogFiles> _log_files;
 
@@ -31,7 +33,13 @@ static std::string LOG_DIRECTORY = "logs/";
 
 int main(int argc, char* argv[])
 {
-	std::string title;
+	// We want to disable the mavsdk logging which spams stdout
+	mavsdk::log::subscribe([](...) {
+		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
+		return true;
+	});
+
+	std::string name;
 	std::string version;
 	std::string connection_url;
 	std::string logdir;
@@ -39,7 +47,7 @@ int main(int argc, char* argv[])
 
 	try {
 		auto config = toml::parse_file("config.toml");
-		title = config["title"].value_or("logloader");
+		name = config["name"].value_or("logloader");
 		version = config["version"].value_or("0.0.0");
 		connection_url = config["connection_url"].value_or("0.0.0");
 		logdir = config["logdir"].value_or("logs/");
@@ -54,7 +62,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	std::cout << "Application: " << title << std::endl;
+	std::cout << "Name: " << name << std::endl;
 	std::cout << "Version: " << version << std::endl;
 	std::cout << "connection_url: " << connection_url << std::endl;
 	std::cout << "logdir: " << logdir << std::endl;
@@ -76,6 +84,11 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
+	// Only fetch entires while disarmed
+	// TODO: if (armed) --> spin
+	// TODO: else () --> download logs we don't have
+	// TODO: if (!armed && network) --> upload logs
+
 	_log_files = std::make_shared<LogFiles>(system.value());
 	auto entries_result = _log_files->get_entries();
 
@@ -89,9 +102,13 @@ int main(int argc, char* argv[])
 	// Ensure the logs directory exists
 	fs::create_directories(logdir);
 
+	if (logdir.back() != '/') {
+		logdir += '/';
+	}
+
 	std::string most_recent_log = find_most_recent_log(logdir);
 
-	std::cout << "Most recent: " << most_recent_log << std::endl;
+	std::cout << "Most recent local log: " << most_recent_log << std::endl;
 
 	if (most_recent_log.empty()) {
 		std::cout << "No local logs found, downloading latest" << std::endl;
@@ -104,6 +121,8 @@ int main(int argc, char* argv[])
 		for (auto& entry : entries) {
 			auto log_path = logdir + entry.date + ".ulg";
 
+			std::cout << entry.date << std::endl;
+
 			if (!fs::exists(log_path) && entry.date > most_recent_log) {
 				download_log(entry, log_path);
 			}
@@ -115,22 +134,23 @@ int main(int argc, char* argv[])
 	std::vector<std::string> logs_to_upload;
 
 	for (const auto& it : fs::directory_iterator(logdir)) {
-		std::string log = it.path();
+		std::string logpath = it.path();
 
-		if (!has_log_been_uploaded(log)) {
-			logs_to_upload.push_back(log);
-			std::cout << log << std::endl;
+		if (!has_log_been_uploaded(logpath)) {
+			logs_to_upload.push_back(logpath);
+			std::cout << logpath << std::endl;
 		}
 	}
 
 	std::cout << "Uploading " << logs_to_upload.size() << " logs" << std::endl;
 
-	for (const auto& log : logs_to_upload) {
-		if (send_log_to_server(email, log)) {
-			std::cout << "Uploaded success: -- " << log << std::endl;
-			mark_log_as_uploaded(log);
+	for (const auto& logpath : logs_to_upload) {
+		if (send_log_to_server(email, logpath)) {
+			mark_log_as_uploaded(logpath);
 		}
 	}
+
+	std::cout << "exiting" << std::endl;
 
 	return 0;
 }
@@ -140,7 +160,7 @@ bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
 	auto prom = std::promise<LogFiles::Result> {};
 	auto future_result = prom.get_future();
 
-	std::cout << "Downloading " << entry.size_bytes << " bytes -- " << entry.date + ".ulg";
+	std::cout << "Downloading " << entry.size_bytes << " bytes -- " << entry.date + ".ulg" << std::endl;
 
 	_log_files->download_log_file_async(
 		entry,
@@ -149,6 +169,8 @@ bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
 		if (result != LogFiles::Result::Next) {
 			prom.set_value(result);
 		}
+
+		std::cout << "Downloading log: " << int(progress.progress * 100) << "%" << std::endl;
 	});
 
 	auto result = future_result.get();
@@ -211,7 +233,7 @@ bool send_log_to_server(const std::string& email, const std::string& filepath)
 	auto res = cli.Post("/upload", items);
 
 	if (res && res->status == 302) {
-		std::cout << "Uploaded successfully. URL: " << res->get_header_value("Location") << std::endl;
+		std::cout << "Upload success: " << res->get_header_value("Location") << std::endl;
 		return true;
 	}
 
@@ -221,13 +243,13 @@ bool send_log_to_server(const std::string& email, const std::string& filepath)
 	}
 }
 
-bool has_log_been_uploaded(const std::string& log)
+bool has_log_been_uploaded(const std::string& filepath)
 {
 	std::ifstream file("uploaded_logs.txt");
 	std::string line;
 
 	while (std::getline(file, line)) {
-		if (line == log) {
+		if (line == filepath) {
 			return true;
 		}
 	}
@@ -235,11 +257,11 @@ bool has_log_been_uploaded(const std::string& log)
 	return false;
 }
 
-void mark_log_as_uploaded(const std::string& log)
+void mark_log_as_uploaded(const std::string& filepath)
 {
 	std::ofstream file("uploaded_logs.txt", std::ios::app);
 
 	if (file) {
-		file << log << std::endl;
+		file << filepath << std::endl;
 	}
 }
