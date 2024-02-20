@@ -80,15 +80,18 @@ int main(int argc, char* argv[])
 	auto system = mavsdk.first_autopilot(3);
 
 	if (!system) {
-		std::cerr << "Timed out waiting for system\n";
+		std::cerr << "Timed out waiting for system" << std::endl;
 		return 1;
 	}
+
+	std::cout << "Connected to autopilot" << std::endl;
 
 	// Only fetch entires while disarmed
 	// TODO: if (armed) --> spin
 	// TODO: else () --> download logs we don't have
 	// TODO: if (!armed && network) --> upload logs
 
+	std::cout << "Fetching logs..." << std::endl;
 	_log_files = std::make_shared<LogFiles>(system.value());
 	auto entries_result = _log_files->get_entries();
 
@@ -109,6 +112,12 @@ int main(int argc, char* argv[])
 	std::string most_recent_log = find_most_recent_log(logdir);
 
 	std::cout << "Most recent local log: " << most_recent_log << std::endl;
+
+	// TODO: mode:
+	// -- Download/upload all logs
+	// -- Download/upload logs after a predefined date
+	// -- Ignore logs with date greater than X
+	// -- Logs without a datetime in name? e.g session1.ulg
 
 	if (most_recent_log.empty()) {
 		std::cout << "No local logs found, downloading latest" << std::endl;
@@ -135,7 +144,7 @@ int main(int argc, char* argv[])
 	}
 
 	// Store list of logs to upload
-	std::cout << "Logs to upload" << std::endl;
+	std::cout << "Logs to upload:" << std::endl;
 	std::vector<std::string> logs_to_upload;
 
 	for (const auto& it : fs::directory_iterator(logdir)) {
