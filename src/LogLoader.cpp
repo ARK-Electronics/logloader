@@ -72,7 +72,7 @@ bool LogLoader::fetch_log_entries()
 
 void LogLoader::run()
 {
-	// TODO: Check if vehicle is armed
+	// Check if vehicle is armed
 	//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
 	if (_telemetry->armed()) {
 		std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -100,14 +100,15 @@ void LogLoader::run()
 	//  - Upload most recent
 	// 	- Disabled
 
+	// If we have no logs, just download the latest
 	if (most_recent_log.empty()) {
 		std::cout << "No local logs found, downloading latest" << std::endl;
 		mavsdk::LogFiles::Entry entry = _log_entries.back();
+		std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
 		auto log_path = _settings.logging_dir + entry.date + ".ulg";
 		download_log(entry, log_path);
 
 	} else {
-		// TODO: interrupt download with ARMED state change
 		// Check which logs need to be downloaded
 		for (auto& entry : _log_entries) {
 
@@ -227,24 +228,24 @@ bool LogLoader::send_log_to_server(const std::string& filepath)
 
 std::string LogLoader::find_most_recent_log()
 {
-	// Updated regex pattern to match "yyyy-mm-ddThh:mm:ssZ.ulg" format
+	// Regex pattern to match "yyyy-mm-ddThh:mm:ssZ.ulg" format
 	std::regex log_pattern("^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg$");
-	std::string latest_date_time;
+	std::string latest_log;
 
 	for (const auto& entry : fs::directory_iterator(_settings.logging_dir)) {
 		std::string filename = entry.path().filename().string();
 		std::smatch matches;
 
 		if (std::regex_search(filename, matches, log_pattern) && matches.size() > 1) {
-			std::string log_date_time = matches[1].str();
+			std::string log = matches[1].str();
 
-			if (log_date_time > latest_date_time) {
-				latest_date_time = log_date_time;
+			if (log > latest_log) {
+				latest_log = log;
 			}
 		}
 	}
 
-	return latest_date_time;
+	return latest_log;
 }
 
 bool LogLoader::log_has_been_uploaded(const std::string& filepath)
