@@ -15,10 +15,10 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	: _settings(settings)
 {
 	// Disable mavsdk noise
-	mavsdk::log::subscribe([](...) {
-		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
-		return true;
-	});
+	// mavsdk::log::subscribe([](...) {
+	// 	// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
+	// 	return true;
+	// });
 
 	// Set fixed-point notation and 2 decimal places
 	std::cout << std::fixed << std::setprecision(2);
@@ -29,6 +29,11 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	}
 
 	fs::create_directories(_settings.logging_dir);
+}
+
+void LogLoader::stop()
+{
+	_should_exit = true;
 }
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
@@ -72,88 +77,86 @@ bool LogLoader::fetch_log_entries()
 
 void LogLoader::run()
 {
-	// Check if vehicle is armed
-	//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
-	if (_telemetry->armed()) {
-		std::this_thread::sleep_for(std::chrono::seconds(1));
-		return;
-	}
-
-	if (!fetch_log_entries()) {
-		std::cerr << "Failed to fetch logs" << std::endl;
-		std::this_thread::sleep_for(std::chrono::seconds(1));
-		return;
-	}
-
-	std::string most_recent_log = find_most_recent_log();
-
-	std::cout << "Most recent local log: " << most_recent_log << std::endl;
-
-	// TODO: mode:
-	//
-	// DownloadMode:
-	// 	- Download logs greater than most recent local log
-	// 	- Download all logs
-	//
-	// UploadMode:
-	// 	- Upload all logs
-	//  - Upload most recent
-	// 	- Disabled
-
-	// If we have no logs, just download the latest
-	if (most_recent_log.empty()) {
-		std::cout << "No local logs found, downloading latest" << std::endl;
-		mavsdk::LogFiles::Entry entry = _log_entries.back();
-		std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
-		auto log_path = _settings.logging_dir + entry.date + ".ulg";
-		download_log(entry, log_path);
-
-	} else {
-		// Check which logs need to be downloaded
-		for (auto& entry : _log_entries) {
-
-			if (_telemetry->armed()) {
-				return;
-			}
-
-			auto log_path = _settings.logging_dir + entry.date + ".ulg";
-
-			std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
-
-			if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
-				std::cout << "File exists but size doesn't match -- incomplete log!" << std::endl;
-				fs::remove(log_path);
-				download_log(entry, log_path);
-
-			} else if (!fs::exists(log_path) && entry.date > most_recent_log) {
-				download_log(entry, log_path);
-			}
-		}
-	}
-
-	std::cout << "Logs to upload:" << std::endl;
-	std::vector<std::string> logs_to_upload;
-
-	for (const auto& it : fs::directory_iterator(_settings.logging_dir)) {
-		std::string logpath = it.path();
-
-		if (!log_has_been_uploaded(logpath)) {
-			logs_to_upload.push_back(logpath);
-			std::cout << logpath << std::endl << std::flush;
-		}
-	}
-
-	std::cout << "Uploading " << logs_to_upload.size() << " logs" << std::endl;
-
-	// TODO: interrupt upload for ARMED state change
-	for (const auto& logpath : logs_to_upload) {
-
+	while (!_should_exit) {
+		// Check if vehicle is armed
+		//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
 		if (_telemetry->armed()) {
-			return;
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			continue;
 		}
 
-		if (send_log_to_server(logpath)) {
-			mark_log_as_uploaded(logpath);
+		if (!fetch_log_entries()) {
+			std::cerr << "Failed to fetch logs" << std::endl;
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			continue;
+		}
+
+
+		// TODO: mode:
+		//
+		// DownloadMode:
+		// 	- Download logs greater than most recent local log
+		// 	- Download all logs
+		//
+		// UploadMode:
+		// 	- Upload all logs
+		//  - Upload most recent
+		// 	- Disabled
+
+		// If we have no logs, just download the latest
+		std::string most_recent_log = find_most_recent_log();
+
+		if (most_recent_log.empty()) {
+			std::cout << "No local logs found, downloading latest" << std::endl;
+			mavsdk::LogFiles::Entry entry = _log_entries.back();
+			std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
+			auto log_path = _settings.logging_dir + entry.date + ".ulg";
+			download_log(entry, log_path);
+
+		} else {
+			// Check which logs need to be downloaded
+			for (auto& entry : _log_entries) {
+
+				if (_telemetry->armed() || _should_exit) {
+					break;
+				}
+
+				auto log_path = _settings.logging_dir + entry.date + ".ulg";
+
+				std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
+
+				if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
+					std::cout << "File exists but size doesn't match -- incomplete log!" << std::endl;
+					fs::remove(log_path);
+					download_log(entry, log_path);
+
+				} else if (!fs::exists(log_path) && entry.date > most_recent_log) {
+					download_log(entry, log_path);
+				}
+			}
+		}
+
+		std::vector<std::string> logs_to_upload;
+
+		for (const auto& it : fs::directory_iterator(_settings.logging_dir)) {
+			std::string logpath = it.path();
+
+			if (!log_has_been_uploaded(logpath)) {
+				logs_to_upload.push_back(logpath);
+				std::cout << "\t" << logpath << std::endl << std::flush;
+			}
+		}
+
+		// TODO: interrupt upload for ARMED state change
+		for (const auto& logpath : logs_to_upload) {
+
+			if (_telemetry->armed() || _should_exit) {
+				break;
+			}
+
+			if (send_log_to_server(logpath)) {
+				mark_log_as_uploaded(logpath);
+			}
 		}
 	}
 }
@@ -210,7 +213,8 @@ bool LogLoader::send_log_to_server(const std::string& filepath)
 	items.push_back({"filearg", content, filepath, "application/octet-stream"});
 
 	// Post multi-part form
-	std::cout << "Uploading: " << filepath << std::endl;
+	std::cout << "Uploading " << fs::file_size(filepath) / 1e6 << " MB -- " << fs::path(filepath).filename() << std::endl;
+
 	httplib::SSLClient cli("logs.px4.io");
 
 	auto res = cli.Post("/upload", items);
@@ -250,7 +254,7 @@ std::string LogLoader::find_most_recent_log()
 
 bool LogLoader::log_has_been_uploaded(const std::string& filepath)
 {
-	std::ifstream file(_settings.logging_dir + UPLOADED_LOGS_TEXT_FILE);
+	std::ifstream file(UPLOADED_LOGS_TEXT_FILE);
 	std::string line;
 
 	while (std::getline(file, line)) {
@@ -264,7 +268,7 @@ bool LogLoader::log_has_been_uploaded(const std::string& filepath)
 
 void LogLoader::mark_log_as_uploaded(const std::string& filepath)
 {
-	std::ofstream file(_settings.logging_dir + UPLOADED_LOGS_TEXT_FILE, std::ios::app);
+	std::ofstream file(UPLOADED_LOGS_TEXT_FILE, std::ios::app);
 
 	if (file) {
 		file << filepath << std::endl;

@@ -4,7 +4,8 @@
 #include <toml.hpp>
 
 static void signal_handler(int signum);
-bool _should_exit = false;
+
+std::shared_ptr<LogLoader> _log_loader;
 
 int main(int argc, char* argv[])
 {
@@ -33,17 +34,13 @@ int main(int argc, char* argv[])
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0")
 	};
 
-	LogLoader log_loader(settings);
+	_log_loader = std::make_shared<LogLoader>(settings);
 
-	double timeout_ms = 3;
-
-	if (!log_loader.wait_for_mavsdk_connection(timeout_ms)) {
+	if (!_log_loader->wait_for_mavsdk_connection(3)) {
 		return 0;
 	}
 
-	while (!_should_exit) {
-		log_loader.run();
-	}
+	_log_loader->run();
 
 	std::cout << "exiting" << std::endl;
 
@@ -53,5 +50,6 @@ int main(int argc, char* argv[])
 static void signal_handler(int signum)
 {
 	std::cout << "signal_handler!" << std::endl;
-	_should_exit = true;
+
+	if (_log_loader.get()) _log_loader->stop();
 }

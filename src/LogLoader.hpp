@@ -17,6 +17,7 @@ public:
 	LogLoader(const Settings& settings);
 
 	void run();
+	void stop();
 	bool wait_for_mavsdk_connection(double timeout_ms);
 
 private:
@@ -34,4 +35,5 @@ private:
 	std::shared_ptr<mavsdk::LogFiles> _log_files;
 	std::vector<mavsdk::LogFiles::Entry> _log_entries;
 
+	bool _should_exit = false;
 };
