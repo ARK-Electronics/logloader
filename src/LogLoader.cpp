@@ -1,6 +1,15 @@
 #include "LogLoader.hpp"
+#include <iomanip>
+#include <iostream>
+#include <filesystem>
+#include <future>
+#include <regex>
+#define CPPHTTPLIB_OPENSSL_SUPPORT
+#include <httplib.h>
 
 namespace fs = std::filesystem;
+
+static std::string UPLOADED_LOGS_TEXT_FILE = "uploaded_logs.txt";
 
 LogLoader::LogLoader(const LogLoader::Settings& settings)
 	: _settings(settings)
@@ -15,14 +24,11 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	std::cout << std::fixed << std::setprecision(2);
 
 	// Ensure the logs directory exists
-
-	std::string& logdir = _settings.logging_dir;
-
-	if (logdir.back() != '/') {
-		logdir += '/';
+	if (_settings.logging_dir.back() != '/') {
+		_settings.logging_dir += '/';
 	}
 
-	fs::create_directories(logdir);
+	fs::create_directories(_settings.logging_dir);
 }
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
@@ -234,7 +240,7 @@ std::string LogLoader::find_most_recent_log()
 
 bool LogLoader::log_has_been_uploaded(const std::string& filepath)
 {
-	std::ifstream file("uploaded_logs.txt");
+	std::ifstream file(_settings.logging_dir + UPLOADED_LOGS_TEXT_FILE);
 	std::string line;
 
 	while (std::getline(file, line)) {
@@ -248,7 +254,7 @@ bool LogLoader::log_has_been_uploaded(const std::string& filepath)
 
 void LogLoader::mark_log_as_uploaded(const std::string& filepath)
 {
-	std::ofstream file("uploaded_logs.txt", std::ios::app);
+	std::ofstream file(_settings.logging_dir + UPLOADED_LOGS_TEXT_FILE, std::ios::app);
 
 	if (file) {
 		file << filepath << std::endl;

@@ -1,5 +1,7 @@
 #include "LogLoader.hpp"
 #include <signal.h>
+#include <iostream>
+#include <toml.hpp>
 
 static void signal_handler(int signum);
 bool _should_exit = false;
@@ -10,42 +12,25 @@ int main(int argc, char* argv[])
 	signal(SIGTERM, signal_handler);
 	setbuf(stdout, NULL); // Disable stdout buffering
 
-	std::cout << std::fixed << std::setprecision(2); // Set fixed-point notation and 2 decimal places
-
-	// We want to disable the mavsdk logging which spams stdout
-	mavsdk::log::subscribe([](...) {
-		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
-		return true;
-	});
-
-	std::string name;
-	std::string version;
-	std::string connection_url;
-	std::string logdir;
-	std::string email;
+	toml::table config;
 
 	try {
-		auto config = toml::parse_file("config.toml");
-		name = config["name"].value_or("logloader");
-		version = config["version"].value_or("0.0.0");
-		connection_url = config["connection_url"].value_or("0.0.0");
-		logdir = config["logdir"].value_or("logs/");
-		email = config["email"].value_or("");
+		config = toml::parse_file("config.toml");
 
 	} catch (const toml::parse_error& err) {
 		std::cerr << "Parsing failed:\n" << err << "\n";
-		return 1;
+		return 0;
 
 	} catch (const std::exception& err) {
 		std::cerr << "Error: " << err.what() << "\n";
-		return 1;
+		return 0;
 	}
 
 	// Setup the LogLoader
 	LogLoader::Settings settings = {
-		.email = email,
-		.logging_dir = logdir,
-		.mavsdk_connection_url = connection_url
+		.email = config["email"].value_or(""),
+		.logging_dir = config["logdir"].value_or("logs/"),
+		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0")
 	};
 
 	LogLoader log_loader(settings);
