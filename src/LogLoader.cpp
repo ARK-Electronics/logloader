@@ -51,6 +51,7 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 	std::cout << "Connected to autopilot" << std::endl;
 
 	_log_files = std::make_shared<mavsdk::LogFiles>(system.value());
+	_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
 
 	return true;
 }
@@ -73,9 +74,7 @@ void LogLoader::run()
 {
 	// TODO: Check if vehicle is armed
 	//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
-	bool vehicle_armed = false;
-
-	if (vehicle_armed) {
+	if (_telemetry->armed()) {
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 		return;
 	}
@@ -111,6 +110,11 @@ void LogLoader::run()
 		// TODO: interrupt download with ARMED state change
 		// Check which logs need to be downloaded
 		for (auto& entry : _log_entries) {
+
+			if (_telemetry->armed()) {
+				return;
+			}
+
 			auto log_path = _settings.logging_dir + entry.date + ".ulg";
 
 			std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
@@ -142,6 +146,11 @@ void LogLoader::run()
 
 	// TODO: interrupt upload for ARMED state change
 	for (const auto& logpath : logs_to_upload) {
+
+		if (_telemetry->armed()) {
+			return;
+		}
+
 		if (send_log_to_server(logpath)) {
 			mark_log_as_uploaded(logpath);
 		}
