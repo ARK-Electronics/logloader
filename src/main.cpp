@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -33,6 +34,8 @@ static std::string LOG_DIRECTORY = "logs/";
 
 int main(int argc, char* argv[])
 {
+	std::cout << std::fixed << std::setprecision(2); // Set fixed-point notation and 2 decimal places
+
 	// We want to disable the mavsdk logging which spams stdout
 	mavsdk::log::subscribe([](...) {
 		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
@@ -130,7 +133,7 @@ int main(int argc, char* argv[])
 		for (auto& entry : entries) {
 			auto log_path = logdir + entry.date + ".ulg";
 
-			std::cout << entry.date << std::endl;
+			std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
 
 			if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
 				std::cout << "File exists but size don't match!" << std::endl;
@@ -174,7 +177,7 @@ bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
 	auto prom = std::promise<LogFiles::Result> {};
 	auto future_result = prom.get_future();
 
-	std::cout << "Downloading " << entry.size_bytes << " bytes -- " << entry.date + ".ulg" << std::endl;
+	std::cout << "Downloading " << entry.size_bytes / 1e6 << " MB -- " << entry.date + ".ulg" << std::endl;
 
 	_log_files->download_log_file_async(
 		entry,
@@ -188,6 +191,8 @@ bool download_log(const LogFiles::Entry& entry, const std::string& log_path)
 	});
 
 	auto result = future_result.get();
+
+	std::cout << std::endl;
 
 	return result == LogFiles::Result::Success;
 }
