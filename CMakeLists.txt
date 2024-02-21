@@ -51,6 +51,7 @@ include_directories(third_party/tomlplusplus/)
 # Create executable
 add_executable(logloader
     src/main.cpp
+    src/LogLoader.cpp
 )
 
 target_link_libraries(logloader
