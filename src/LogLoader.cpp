@@ -42,14 +42,14 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 	auto result = _mavsdk->add_any_connection(_settings.mavsdk_connection_url);
 
 	if (result != mavsdk::ConnectionResult::Success) {
-		std::cerr << "Connection failed: " << result << std::endl;
+		std::cout << "Connection failed: " << result << std::endl;
 		return false;
 	}
 
 	auto system = _mavsdk->first_autopilot(timeout_ms);
 
 	if (!system) {
-		std::cerr << "Timed out waiting for system" << std::endl;
+		std::cout << "Timed out waiting for system" << std::endl;
 		return false;
 	}
 
@@ -67,11 +67,16 @@ bool LogLoader::fetch_log_entries()
 	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
-		std::cerr << "Couldn't get logs" << std::endl;
+		std::cout << "Couldn't get logs" << std::endl;
 		return false;
 	}
 
-	std::vector<mavsdk::LogFiles::Entry> _log_entries = entries_result.second;
+	_log_entries = entries_result.second;
+
+	for (auto& e : _log_entries) {
+		std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
+	}
+
 	return true;
 }
 
@@ -86,11 +91,10 @@ void LogLoader::run()
 		}
 
 		if (!fetch_log_entries()) {
-			std::cerr << "Failed to fetch logs" << std::endl;
+			std::cout << "Failed to fetch logs" << std::endl;
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 		}
-
 
 		// TODO: mode:
 		//
@@ -123,7 +127,6 @@ void LogLoader::run()
 
 				auto log_path = _settings.logging_dir + entry.date + ".ulg";
 
-				std::cout << entry.id << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << std::endl;
 
 				if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
 					std::cout << "File exists but size doesn't match -- incomplete log!" << std::endl;
@@ -143,7 +146,6 @@ void LogLoader::run()
 
 			if (!log_has_been_uploaded(logpath)) {
 				logs_to_upload.push_back(logpath);
-				std::cout << "\t" << logpath << std::endl << std::flush;
 			}
 		}
 
@@ -166,17 +168,19 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
 
-	std::cout << "Downloading " << entry.size_bytes / 1e6 << " MB -- " << entry.date + ".ulg" << std::endl;
+	std::cout << std::endl << "DL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB";
+
 
 	_log_files->download_log_file_async(
 		entry,
 		dowload_path,
-	[&prom](mavsdk::LogFiles::Result result, mavsdk::LogFiles::ProgressData progress) {
+	[&prom, &entry](mavsdk::LogFiles::Result result, mavsdk::LogFiles::ProgressData progress) {
 		if (result != mavsdk::LogFiles::Result::Next) {
 			prom.set_value(result);
 		}
 
-		std::cout << "\rDownloading log: " << int(progress.progress * 100) << "%" << std::flush;
+		std::cout << "\rDL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << "\t" << int(
+				  progress.progress * 100) << "%" << std::flush;
 	});
 
 	auto result = future_result.get();
@@ -191,7 +195,7 @@ bool LogLoader::send_log_to_server(const std::string& filepath)
 	std::ifstream file(filepath, std::ios::binary);
 
 	if (!file) {
-		std::cerr << "Could not open file " << filepath << std::endl;
+		std::cout << "Could not open file " << filepath << std::endl;
 		return false;
 	}
 
@@ -225,7 +229,7 @@ bool LogLoader::send_log_to_server(const std::string& filepath)
 	}
 
 	else {
-		std::cerr << "Failed to upload " << filepath << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Failed to upload " << filepath << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 		return false;
 	}
 }
