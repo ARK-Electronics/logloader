@@ -20,10 +20,9 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	// 	return true;
 	// });
 
-	// Set fixed-point notation and 2 decimal places
 	std::cout << std::fixed << std::setprecision(8);
 
-	// Ensure the logs directory exists
+	// Ensure proper directory syntax
 	if (_settings.logging_dir.back() != '/') {
 		_settings.logging_dir += '/';
 	}
@@ -55,6 +54,7 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 
 	std::cout << "Connected to autopilot" << std::endl;
 
+	// MAVSDK plugins
 	_log_files = std::make_shared<mavsdk::LogFiles>(system.value());
 	_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
 
@@ -63,15 +63,17 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 
 bool LogLoader::fetch_log_entries()
 {
-	std::cout << "Fetching logs..." << std::endl;
+	std::cout << "Requesting log list..." << std::endl;
 	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
-		std::cout << "Couldn't get logs" << std::endl;
+		std::cout << "Failed to get log list" << std::endl;
 		return false;
 	}
 
 	_log_entries = entries_result.second;
+
+	std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
 
 	for (auto& e : _log_entries) {
 		std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
@@ -172,8 +174,6 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
 
-	// std::cout << std::endl << "DL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB";
-
 	_log_files->download_log_file_async(
 		entry,
 		dowload_path,
@@ -187,10 +187,6 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 			  << entry.size_bytes / 1e6 << "MB"
 			  << "\t" << int(progress.progress * 100.f) << "%"
 			  << "\t" << progress.kbps << "Kbps" << std::flush;
-
-		// TODO: download rate
-		// std::cout << "\rDownloading..." << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << "\t" << int(
-		// 		  progress.progress * 100) << "%" << std::flush;
 	});
 
 	auto result = future_result.get();
@@ -200,6 +196,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	return result == mavsdk::LogFiles::Result::Success;
 }
 
+// TODO: Add RobotoAI endpoint. Abstract away endpoint interface and just pass the data
 bool LogLoader::send_log_to_server(const std::string& filepath)
 {
 	std::ifstream file(filepath, std::ios::binary);
