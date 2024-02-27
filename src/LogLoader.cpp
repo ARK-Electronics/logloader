@@ -182,6 +182,12 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 			prom.set_value(result);
 		}
 
+		std::cout << "\rDownloading..."
+			  << "\t" << entry.date << "\t"
+			  << entry.size_bytes / 1e6 << "MB"
+			  << "\t" << int(progress.progress * 100.f) << "%"
+			  << "\t" << progress.kbps << "Kbps" << std::flush;
+
 		// TODO: download rate
 		// std::cout << "\rDownloading..." << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << "\t" << int(
 		// 		  progress.progress * 100) << "%" << std::flush;
