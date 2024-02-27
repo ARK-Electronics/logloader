@@ -21,7 +21,7 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	// });
 
 	// Set fixed-point notation and 2 decimal places
-	std::cout << std::fixed << std::setprecision(2);
+	std::cout << std::fixed << std::setprecision(8);
 
 	// Ensure the logs directory exists
 	if (_settings.logging_dir.back() != '/') {
@@ -130,6 +130,8 @@ void LogLoader::run()
 
 				if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
 					std::cout << "File exists but size doesn't match -- incomplete log!" << std::endl;
+					std::cout << "size actual / size downloaded: " << entry.size_bytes << "/" << fs::file_size(log_path) << std::endl;
+
 					fs::remove(log_path);
 					download_log(entry, log_path);
 
@@ -139,25 +141,27 @@ void LogLoader::run()
 			}
 		}
 
-		std::vector<std::string> logs_to_upload;
+		if (_settings.upload) {
+			std::vector<std::string> logs_to_upload;
 
-		for (const auto& it : fs::directory_iterator(_settings.logging_dir)) {
-			std::string logpath = it.path();
+			for (const auto& it : fs::directory_iterator(_settings.logging_dir)) {
+				std::string logpath = it.path();
 
-			if (!log_has_been_uploaded(logpath)) {
-				logs_to_upload.push_back(logpath);
-			}
-		}
-
-		// TODO: interrupt upload for ARMED state change
-		for (const auto& logpath : logs_to_upload) {
-
-			if (_telemetry->armed() || _should_exit) {
-				break;
+				if (!log_has_been_uploaded(logpath)) {
+					logs_to_upload.push_back(logpath);
+				}
 			}
 
-			if (send_log_to_server(logpath)) {
-				mark_log_as_uploaded(logpath);
+			// TODO: interrupt upload for ARMED state change
+			for (const auto& logpath : logs_to_upload) {
+
+				if (_telemetry->armed() || _should_exit) {
+					break;
+				}
+
+				if (send_log_to_server(logpath)) {
+					mark_log_as_uploaded(logpath);
+				}
 			}
 		}
 	}
@@ -168,8 +172,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
 
-	std::cout << std::endl << "DL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB";
-
+	// std::cout << std::endl << "DL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB";
 
 	_log_files->download_log_file_async(
 		entry,
@@ -179,8 +182,9 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 			prom.set_value(result);
 		}
 
-		std::cout << "\rDL" << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << "\t" << int(
-				  progress.progress * 100) << "%" << std::flush;
+		// TODO: download rate
+		// std::cout << "\rDownloading..." << "\t" << entry.date << "\t" << entry.size_bytes / 1e6 << "MB" << "\t" << int(
+		// 		  progress.progress * 100) << "%" << std::flush;
 	});
 
 	auto result = future_result.get();

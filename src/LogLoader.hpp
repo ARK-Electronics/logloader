@@ -12,6 +12,7 @@ public:
 		std::string email;
 		std::string logging_dir;
 		std::string mavsdk_connection_url;
+		bool upload;
 	};
 
 	LogLoader(const Settings& settings);

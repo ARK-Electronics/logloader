@@ -31,7 +31,8 @@ int main(int argc, char* argv[])
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
 		.logging_dir = config["logdir"].value_or("logs/"),
-		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0")
+		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
+		.upload = config["upload"].value_or(false)
 	};
 
 	_log_loader = std::make_shared<LogLoader>(settings);
