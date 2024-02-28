@@ -35,6 +35,7 @@ private:
 	std::vector<std::string> get_logs_to_upload();
 	void upload_logs_thread();
 	bool send_log_to_server(const std::string& file_path);
+	bool server_reachable();
 	bool log_has_been_uploaded(const std::string& file_path);
 	void mark_log_as_uploaded(const std::string& file_path);
 

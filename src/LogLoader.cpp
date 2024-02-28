@@ -146,7 +146,7 @@ void LogLoader::upload_logs_thread()
 			}
 
 			// Upload the log
-			if (send_log_to_server(log_path)) {
+			if (server_reachable() && send_log_to_server(log_path)) {
 				mark_log_as_uploaded(log_path);
 			}
 		}
@@ -304,7 +304,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	auto res = cli.Post("/upload", items);
 
 	if (res && res->status == 302) {
-		std::string url = host_name + res->get_header_value("Location");
+		std::string url = "https://" + host_name + res->get_header_value("Location");
 		std::cout << std::endl << "Upload success:\t" <<  url << std::endl;
 		return true;
 	}
@@ -313,6 +313,18 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 		std::cout << "Failed to upload " << file_path << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 		return false;
 	}
+}
+
+bool LogLoader::server_reachable()
+{
+	std::string host_name = "logs.px4.io";
+	httplib::SSLClient cli(host_name);
+	auto res = cli.Get("/");
+	bool reachable = res && res->status == 200;
+
+	if (!reachable) std::cout << std::endl << "Upload failed. Server cannot be reached." << std::endl;
+
+	return reachable;
 }
 
 bool LogLoader::log_has_been_uploaded(const std::string& file_path)

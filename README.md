@@ -1,5 +1,5 @@
-## Load ur logs
-Downloads PX4 logs from the SD card and uploads to [PX4 Flight Review](https://review.px4.io/).
+## PX4 Flight Log Management
+Downloads PX4 ulogs from the flight controller SD card and uploads to [PX4 Flight Review](https://review.px4.io/).
 
 The **config.toml** file is used to configure the program settings.
 https://github.com/ARK-Electronics/logloader/blob/6d3804ba3b3f1cca793322e8d6f6593c37e20fe0/config.toml#L1-L7
