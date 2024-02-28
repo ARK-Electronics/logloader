@@ -193,6 +193,9 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	if (success) {
 		std::lock_guard<std::mutex> lock(_current_download_mutex);
 		_current_download.second = true;
+
+	} else {
+		std::cout << "Download failed" << std::endl;
 	}
 
 	return success;

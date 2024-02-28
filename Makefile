@@ -3,9 +3,12 @@ all:
 	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
 	@size build/logloader
 
-install: all
-	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
-	@cmake --install build
+install:
+	@cmake -Bbuild -H.
+	cmake --build build -j$(nproc)
+	@sudo cmake --install build
+	@mkdir -p ${HOME}/logloader/logs
+	@cp install.config.toml ${HOME}/logloader/config.toml
 
 clean:
 	@rm -rf build
