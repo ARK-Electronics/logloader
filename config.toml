@@ -3,5 +3,5 @@ version = "1.0.0"
 connection_url = "udp://192.168.1.34:14550"
 logging_directory = "logs"
 uploaded_logs_file = "uploaded_logs.txt"
-email = "dahl.jakejacob@gmail.com"
+email = "jake@arkelectron.com"
 upload_enabled = true
