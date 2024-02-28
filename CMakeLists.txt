@@ -22,6 +22,7 @@ add_executable(logloader
 )
 
 target_link_libraries(logloader
+    pthread
     OpenSSL::SSL
     OpenSSL::Crypto
     MAVSDK::mavsdk
