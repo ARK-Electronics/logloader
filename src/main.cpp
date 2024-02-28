@@ -4,6 +4,8 @@
 #include <iostream>
 #include <toml.hpp>
 #include <pwd.h>
+#include <unistd.h>
+#include <sys/types.h>
 
 static void signal_handler(int signum);
 

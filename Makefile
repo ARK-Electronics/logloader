@@ -8,7 +8,11 @@ install:
 	cmake --build build -j$(nproc)
 	@sudo cmake --install build
 	@mkdir -p ${HOME}/logloader/logs
-	@cp install.config.toml ${HOME}/logloader/config.toml
+	@if [ -f install.config.toml ]; then \
+		cp install.config.toml ${HOME}/logloader/config.toml; \
+	else \
+		cp config.toml ${HOME}/logloader/config.toml; \
+	fi
 
 clean:
 	@rm -rf build

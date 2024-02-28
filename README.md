@@ -12,8 +12,9 @@ Install MAVSDK at `/usr/local` if you haven't already
 ```
 git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
 cd MAVSDK
-cmake -Bbuild/default -DCMAKE_BUILD_TYPE=Release -H.
-sudo cmake --build build/default -j12 --target install
+cmake -Bbuild/default -j$(nproc) -DCMAKE_BUILD_TYPE=Release -H.
+sudo cmake --build build/default -j$(nproc) --target install
+cd ..
 ```
 
 Clone this repository
