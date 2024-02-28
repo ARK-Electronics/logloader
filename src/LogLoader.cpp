@@ -247,8 +247,13 @@ void LogLoader::upload_logs_thread()
 			}
 
 			// Upload the log
-			if (server_reachable() && send_log_to_server(log_path)) {
-				mark_log_as_uploaded(log_path);
+			if (server_reachable()) {
+				if (send_log_to_server(log_path)) {
+					mark_log_as_uploaded(log_path);
+
+				} else {
+					std::cout << "Sending log to server failed" << std::endl;
+				}
 
 			} else {
 				std::cout << "Connection with server failed" << std::endl;
