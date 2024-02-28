@@ -35,7 +35,7 @@ void LogLoader::stop()
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 {
-	_mavsdk = std::make_shared<mavsdk::Mavsdk>(mavsdk::Mavsdk::Configuration(mavsdk::Mavsdk::ComponentType::GroundStation));
+	_mavsdk = std::make_shared<mavsdk::Mavsdk>(mavsdk::Mavsdk::Configuration(mavsdk::Mavsdk::ComponentType::CompanionComputer));
 	auto result = _mavsdk->add_any_connection(_settings.mavsdk_connection_url);
 
 	if (result != mavsdk::ConnectionResult::Success) {
