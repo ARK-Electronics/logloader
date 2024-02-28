@@ -55,4 +55,7 @@ private:
 
 	std::atomic<bool> _should_exit = false;
 	std::atomic<bool> _exiting = false;
+
+	std::condition_variable _exit_cv;
+	std::mutex _exit_cv_mutex;
 };

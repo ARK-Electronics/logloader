@@ -30,7 +30,11 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 
 void LogLoader::stop()
 {
-	_should_exit = true;
+	{
+		std::lock_guard<std::mutex> lock(_exit_cv_mutex);
+		_should_exit = true;
+	}
+	_exit_cv.notify_one();
 }
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
@@ -95,7 +99,10 @@ void LogLoader::run()
 		}
 
 		// Periodically request log list
-		if (!_should_exit) std::this_thread::sleep_for(std::chrono::seconds(10));
+		if (!_should_exit) {
+			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
+			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
+		}
 	}
 
 	upload_thread.join();
