@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.9 LANGUAGES CXX)
 
-find_package(OpenSSL REQUIRED)
+find_package(OpenSSL 3.0.2 REQUIRED)
 
 # Assumes MAVSDK system wide install
 list(APPEND CMAKE_PREFIX_PATH "/usr/local/MAVSDK/install")
