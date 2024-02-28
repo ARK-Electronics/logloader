@@ -8,7 +8,18 @@ https://github.com/ARK-Electronics/logloader/blob/6fc2373c4a9d59bc05183fe32c3eaf
 Downloading and uploading operations are performed in separate threads. The downloading thread will only download logs with a datetime greater than the most recent log found locally in the `logging_directory`. If no logs are found locally only the most recent log will be downloaded. The upload thread will only upload logs that are not recorded in the `uploaded_logs_file`. Logs are named with the ISO 8601 date and time format **yyyy-mm-ddThh:mm:ssZ.ulg**.
 
 ### Build
+Install MAVSDK at `/usr/local` if you haven't already
 ```
+git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
+cd MAVSDK
+cmake -Bbuild/default -DCMAKE_BUILD_TYPE=Release -H.
+sudo cmake --build build/default -j12 --target install
+```
+
+Clone this repository
+```
+git clone --recurse-submodules https://github.com/ARK-Electronics/logloader.git
+cd logloader
 make
 ```
 
