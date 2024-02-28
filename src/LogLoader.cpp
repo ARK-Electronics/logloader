@@ -298,13 +298,12 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	// Post multi-part form
 	std::cout << std::endl << "Uploading: " << fs::path(file_path).filename() << "\t" << fs::file_size(file_path) / 1e6 << "MB" << std::endl;
 
-	std::string host_name = "logs.px4.io";
-	httplib::SSLClient cli(host_name);
+	httplib::SSLClient cli(_settings.server);
 
 	auto res = cli.Post("/upload", items);
 
 	if (res && res->status == 302) {
-		std::string url = "https://" + host_name + res->get_header_value("Location");
+		std::string url = "https://" + _settings.server + res->get_header_value("Location");
 		std::cout << std::endl << "Upload success:\t" <<  url << std::endl;
 		return true;
 	}
@@ -317,8 +316,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 bool LogLoader::server_reachable()
 {
-	std::string host_name = "logs.px4.io";
-	httplib::SSLClient cli(host_name);
+	httplib::SSLClient cli(_settings.server);
 	auto res = cli.Get("/");
 	bool reachable = res && res->status == 200;
 

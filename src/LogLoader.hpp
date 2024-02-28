@@ -11,9 +11,10 @@ class LogLoader
 public:
 	struct Settings {
 		std::string email;
+		std::string server;
+		std::string mavsdk_connection_url;
 		std::string logging_directory;
 		std::string uploaded_logs_file;
-		std::string mavsdk_connection_url;
 		bool upload_enabled;
 		bool public_logs;
 	};
