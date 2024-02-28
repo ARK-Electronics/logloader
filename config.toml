@@ -1,6 +1,6 @@
 email = "jake@arkelectron.com"
 server = "review.px4.io"
-connection_url = "udp://0.0.0.0:14550"
+connection_url = "udp://127.0.0.1:14550"
 logging_directory = "/home/jetson/logs"
 uploaded_logs_file = "/home/jetson/uploaded_logs.txt"
 upload_enabled = true
