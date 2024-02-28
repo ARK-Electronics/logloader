@@ -330,8 +330,8 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	// Build multi-part form data
 	httplib::MultipartFormDataItems items = {
 		{"type", "personal", "", ""},
-		{"description", "Auto Log Upload", "", ""},
-		{"feedback", "hmmm", "", ""},
+		{"description", "Uploaded by logloader", "", ""},
+		{"feedback", "", "", ""},
 		{"source", "auto", "", ""},
 		{"videoUrl", "", "", ""},
 		{"rating", "", "", ""},

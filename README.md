@@ -16,6 +16,14 @@ cmake -Bbuild/default -j$(nproc) -DCMAKE_BUILD_TYPE=Release -H.
 sudo cmake --build build/default -j$(nproc) --target install
 cd ..
 ```
+Upgrade OpenSSL if your version is less than 3.0.2
+```
+openssl version
+```
+A script is provided for your convenience
+```
+./upgrade_openssl.sh
+```
 
 Clone this repository
 ```

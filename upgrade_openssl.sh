@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# https://unix.stackexchange.com/questions/696381/upgrading-openssl-to-version-3-0-2-from-source
+
 sudo su
 cd /usr/src
 wget https://www.openssl.org/source/openssl-3.0.2.tar.gz
