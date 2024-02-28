@@ -15,8 +15,8 @@ set(Yellow      "${Esc}[33m")
 set(Blue        "${Esc}[34m")
 set(BoldGreen   "${Esc}[1;32m")
 
-# MAVSDK
-list(APPEND CMAKE_PREFIX_PATH "/home/jake/code/jake/MAVSDK/install")
+# Assumes MAVSDK system wide install
+list(APPEND CMAKE_PREFIX_PATH "/usr/local/MAVSDK/install")
 find_package(MAVSDK REQUIRED)
 
 # Determine git version
