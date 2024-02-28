@@ -1,9 +1,23 @@
 #include "LogLoader.hpp"
+#include <filesystem>
 #include <signal.h>
 #include <iostream>
 #include <toml.hpp>
+#include <pwd.h>
 
 static void signal_handler(int signum);
+
+static std::string get_user_name()
+{
+	uid_t uid = geteuid();
+	struct passwd* pw = getpwuid(uid);
+
+	if (pw) {
+		return std::string(pw->pw_name);
+	}
+
+	return {};
+}
 
 bool _should_exit = false;
 std::shared_ptr<LogLoader> _log_loader;
@@ -16,8 +30,12 @@ int main(int argc, char* argv[])
 
 	toml::table config;
 
+	std::string default_config_path = "config.toml";
+	bool config_exists = std::filesystem::exists(default_config_path);
+
 	try {
-		config = toml::parse_file("config.toml");
+		std::string config_path = config_exists ? default_config_path : "/home/" + get_user_name() + "/logloader/config.toml";
+		config = toml::parse_file(config_path);
 
 	} catch (const toml::parse_error& err) {
 		std::cerr << "Parsing failed:\n" << err << "\n";

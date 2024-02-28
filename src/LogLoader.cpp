@@ -77,6 +77,12 @@ void LogLoader::run()
 			continue;
 		}
 
+		std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
+
+		for (auto& e : _log_entries) {
+			std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
+		}
+
 		// If we have no logs, just download the latest
 		std::string most_recent_log = find_most_recent_log();
 
@@ -89,7 +95,7 @@ void LogLoader::run()
 		}
 
 		// Periodically request log list
-		std::this_thread::sleep_for(std::chrono::seconds(10));
+		if (!_should_exit) std::this_thread::sleep_for(std::chrono::seconds(10));
 	}
 
 	upload_thread.join();
@@ -101,17 +107,10 @@ bool LogLoader::request_log_entries()
 	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
-		std::cout << "Failed to get log list" << std::endl;
 		return false;
 	}
 
 	_log_entries = entries_result.second;
-
-	std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
-
-	for (auto& e : _log_entries) {
-		std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
-	}
 
 	return true;
 }
@@ -172,6 +171,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 		// Calculate data rate in Kbps
 		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0) / 1000.0) / std::chrono::duration_cast<std::chrono::seconds>(now -
 				   time_start).count(); // Convert bytes to bits and then to Kbps
+
+		// TODO: logic to cancel log download
 
 		if (result != mavsdk::LogFiles::Result::Next) {
 			prom.set_value(result);

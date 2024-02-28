@@ -2,3 +2,4 @@ build/
 logs/
 uploaded_logs.txt
 output.txt
+install.config.toml
