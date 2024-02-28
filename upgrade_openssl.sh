@@ -16,5 +16,9 @@ cd /usr/lib/ssl
 unlink openssl.cnf
 ln -s /usr/local/ssl/openssl.cnf openssl.cnf
 ldconfig
+
+# apt-get install --reinstall ca-certificates
+echo "export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> /etc/environment
+
 openssl version
 exit
