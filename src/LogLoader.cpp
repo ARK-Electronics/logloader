@@ -164,7 +164,9 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	_log_files->download_log_file_async(
 		entry,
 		download_path,
-	[&prom, &entry, &time_start](mavsdk::LogFiles::Result result, mavsdk::LogFiles::ProgressData progress) {
+	[&prom, &entry, &time_start, this](mavsdk::LogFiles::Result result, mavsdk::LogFiles::ProgressData progress) {
+
+		if (_exiting) return;
 
 		auto now = std::chrono::steady_clock::now();
 
@@ -173,6 +175,13 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 				   time_start).count(); // Convert bytes to bits and then to Kbps
 
 		// TODO: logic to cancel log download
+
+		if (_should_exit) {
+			_exiting = true;
+			prom.set_value(mavsdk::LogFiles::Result::Timeout);
+			std::cout << std::endl << "Download cancelled.. exiting" << std::endl;
+			return;
+		}
 
 		if (result != mavsdk::LogFiles::Result::Next) {
 			prom.set_value(result);
@@ -298,7 +307,6 @@ bool LogLoader::server_reachable()
 	return res && res->status == 200;
 }
 
-// TODO: Add RobotoAI endpoint. Abstract away endpoint interface and just pass the data
 bool LogLoader::send_log_to_server(const std::string& file_path)
 {
 	// std::this_thread::sleep_for(std::chrono::seconds(1));

@@ -4,6 +4,7 @@
 #include <mavsdk/plugins/telemetry/telemetry.h>
 #include <mavsdk/plugins/log_files/log_files.h>
 #include <mavsdk/log_callback.h>
+#include <atomic>
 #include <condition_variable>
 
 class LogLoader
@@ -52,5 +53,6 @@ private:
 	std::mutex _current_download_mutex;
 	std::pair<std::string, bool> _current_download;
 
-	bool _should_exit = false;
+	std::atomic<bool> _should_exit = false;
+	std::atomic<bool> _exiting = false;
 };

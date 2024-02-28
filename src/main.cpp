@@ -19,7 +19,7 @@ static std::string get_user_name()
 	return {};
 }
 
-bool _should_exit = false;
+std::atomic<bool> _should_exit = false;
 std::shared_ptr<LogLoader> _log_loader;
 
 int main(int argc, char* argv[])
