@@ -59,27 +59,6 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 	return true;
 }
 
-bool LogLoader::request_log_entries()
-{
-	std::cout << "Requesting log list..." << std::endl;
-	auto entries_result = _log_files->get_entries();
-
-	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
-		std::cout << "Failed to get log list" << std::endl;
-		return false;
-	}
-
-	_log_entries = entries_result.second;
-
-	std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
-
-	for (auto& e : _log_entries) {
-		std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
-	}
-
-	return true;
-}
-
 void LogLoader::run()
 {
 	auto upload_thread = std::thread(&LogLoader::upload_logs_thread, this);
@@ -116,43 +95,25 @@ void LogLoader::run()
 	upload_thread.join();
 }
 
-void LogLoader::upload_logs_thread()
+bool LogLoader::request_log_entries()
 {
-	if (!_settings.upload_enabled) {
-		return;
+	std::cout << "Requesting log list..." << std::endl;
+	auto entries_result = _log_files->get_entries();
+
+	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
+		std::cout << "Failed to get log list" << std::endl;
+		return false;
 	}
 
-	// Short startup delay to allow the download thread to start re-downloading a
-	// potentially imcomplete log if the download was interrupted last time. We
-	// need to wait so that we don't race to check the _current_download.second
-	// status before the downloader marks the file as in-progress.
-	std::this_thread::sleep_for(std::chrono::seconds(5));
+	_log_entries = entries_result.second;
 
-	while (!_should_exit) {
+	std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
 
-		if (_telemetry->armed()) {
-			std::this_thread::sleep_for(std::chrono::seconds(1));
-			continue;
-		}
-
-		// Get list of logs to upload
-		auto logs_to_upload = get_logs_to_upload();
-
-		for (const auto& log_path : logs_to_upload) {
-
-			// Break if armed
-			if (_telemetry->armed() || _should_exit) {
-				continue;
-			}
-
-			// Upload the log
-			if (server_reachable() && send_log_to_server(log_path)) {
-				mark_log_as_uploaded(log_path);
-			}
-		}
-
-		std::this_thread::sleep_for(std::chrono::seconds(1));
+	for (auto& e : _log_entries) {
+		std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
 	}
+
+	return true;
 }
 
 void LogLoader::download_first_log()
@@ -185,23 +146,6 @@ void LogLoader::download_all_logs(const std::string& most_recent_log)
 			download_log(entry, log_path);
 		}
 	}
-}
-
-std::vector<std::string> LogLoader::get_logs_to_upload()
-{
-	std::vector<std::string> logs;
-
-	for (const auto& it : fs::directory_iterator(_settings.logging_directory)) {
-		std::string log_path = it.path();
-
-		bool should_upload = !log_has_been_uploaded(log_path) && log_download_complete(log_path);
-
-		if (should_upload) {
-			logs.push_back(log_path);
-		}
-	}
-
-	return logs;
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::string& download_path)
@@ -253,6 +197,79 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	return success;
 }
 
+void LogLoader::upload_logs_thread()
+{
+	if (!_settings.upload_enabled) {
+		return;
+	}
+
+	// Short startup delay to allow the download thread to start re-downloading a
+	// potentially imcomplete log if the download was interrupted last time. We
+	// need to wait so that we don't race to check the _current_download.second
+	// status before the downloader marks the file as in-progress.
+	std::this_thread::sleep_for(std::chrono::seconds(5));
+
+	while (!_should_exit) {
+
+		if (_telemetry->armed()) {
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+			continue;
+		}
+
+		// Get list of logs to upload
+		auto logs_to_upload = get_logs_to_upload();
+
+		for (const auto& log_path : logs_to_upload) {
+
+			// Break if armed
+			if (_telemetry->armed() || _should_exit) {
+				continue;
+			}
+
+			// Upload the log
+			if (server_reachable() && send_log_to_server(log_path)) {
+				mark_log_as_uploaded(log_path);
+
+			} else {
+				std::cout << "Connection with server failed" << std::endl;
+			}
+		}
+
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+}
+
+std::vector<std::string> LogLoader::get_logs_to_upload()
+{
+	std::vector<std::string> logs;
+
+	for (const auto& it : fs::directory_iterator(_settings.logging_directory)) {
+		std::string log_path = it.path();
+
+		bool should_upload = !log_has_been_uploaded(log_path) && log_download_complete(log_path);
+
+		if (should_upload) {
+			logs.push_back(log_path);
+		}
+	}
+
+	return logs;
+}
+
+bool LogLoader::log_has_been_uploaded(const std::string& file_path)
+{
+	std::ifstream file(_settings.uploaded_logs_file);
+	std::string line;
+
+	while (std::getline(file, line)) {
+		if (line == file_path) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool LogLoader::log_download_complete(const std::string& log_path)
 {
 	std::lock_guard<std::mutex> lock(_current_download_mutex);
@@ -262,6 +279,19 @@ bool LogLoader::log_download_complete(const std::string& log_path)
 	}
 
 	return true;
+}
+
+void LogLoader::mark_log_as_uploaded(const std::string& file_path)
+{
+	std::ofstream file(_settings.uploaded_logs_file, std::ios::app);
+	file << file_path << std::endl;
+}
+
+bool LogLoader::server_reachable()
+{
+	httplib::SSLClient cli(_settings.server);
+	auto res = cli.Get("/");
+	return res && res->status == 200;
 }
 
 // TODO: Add RobotoAI endpoint. Abstract away endpoint interface and just pass the data
@@ -312,37 +342,6 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 		std::cout << "Failed to upload " << file_path << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 		return false;
 	}
-}
-
-bool LogLoader::server_reachable()
-{
-	httplib::SSLClient cli(_settings.server);
-	auto res = cli.Get("/");
-	bool reachable = res && res->status == 200;
-
-	if (!reachable) std::cout << std::endl << "Upload failed. Server cannot be reached." << std::endl;
-
-	return reachable;
-}
-
-bool LogLoader::log_has_been_uploaded(const std::string& file_path)
-{
-	std::ifstream file(_settings.uploaded_logs_file);
-	std::string line;
-
-	while (std::getline(file, line)) {
-		if (line == file_path) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void LogLoader::mark_log_as_uploaded(const std::string& file_path)
-{
-	std::ofstream file(_settings.uploaded_logs_file, std::ios::app);
-	file << file_path << std::endl;
 }
 
 std::string LogLoader::find_most_recent_log()
