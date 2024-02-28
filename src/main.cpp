@@ -5,6 +5,7 @@
 
 static void signal_handler(int signum);
 
+bool _should_exit = false;
 std::shared_ptr<LogLoader> _log_loader;
 
 int main(int argc, char* argv[])
@@ -30,18 +31,23 @@ int main(int argc, char* argv[])
 	// Setup the LogLoader
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
-		.logging_dir = config["logdir"].value_or("logs/"),
+		.logging_directory = config["logging_directory"].value_or("logs/"),
+		.uploaded_logs_file = config["uploaded_logs_file"].value_or("uploaded_logs.txt"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.upload = config["upload"].value_or(false)
+		.upload_enabled = config["upload_enabled"].value_or(false)
 	};
 
 	_log_loader = std::make_shared<LogLoader>(settings);
 
-	if (!_log_loader->wait_for_mavsdk_connection(3)) {
-		return 0;
+	bool connected = false;
+
+	while (!_should_exit && !connected) {
+		connected = _log_loader->wait_for_mavsdk_connection(3);
 	}
 
-	_log_loader->run();
+	if (!_should_exit && connected) {
+		_log_loader->run();
+	}
 
 	std::cout << "exiting" << std::endl;
 
@@ -53,4 +59,6 @@ static void signal_handler(int signum)
 	std::cout << "signal_handler!" << std::endl;
 
 	if (_log_loader.get()) _log_loader->stop();
+
+	_should_exit = true;
 }

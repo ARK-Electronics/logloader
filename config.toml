@@ -1,6 +1,7 @@
 name = "logloader"
 version = "1.0.0"
 connection_url = "udp://192.168.1.34:14550"
-logdir = "logs"
+logging_directory = "logs"
+uploaded_logs_file = "uploaded_logs.txt"
 email = "dahl.jakejacob@gmail.com"
-upload = false
+upload_enabled = true
