@@ -1,13 +1,11 @@
 all:
 	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
-	@cmake -Bbuild -H.; cmake --build build -j 12
+	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
 	@size build/logloader
 
 install: all
-# 	@cmake -Bbuild -H.; cmake --build build -j 12
-	@sudo cp build/logloader /usr/bin
-	@mkdir -p ${HOME}/logloader/logs
-	@cp install.config.toml ${HOME}/logloader/config.toml
+	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
+	@cmake --install build
 
 clean:
 	@rm -rf build

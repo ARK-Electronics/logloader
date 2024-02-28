@@ -59,3 +59,17 @@ target_link_libraries(logloader
     OpenSSL::Crypto
     MAVSDK::mavsdk
 )
+
+# Installation rules
+# Binary installation
+install(TARGETS logloader RUNTIME DESTINATION bin)
+
+# Directory for logs
+set(INSTALL_LOG_DIR "${CMAKE_INSTALL_PREFIX}/logloader/logs")
+install(DIRECTORY DESTINATION ${INSTALL_LOG_DIR})
+
+# Config file installation and renaming
+install(CODE "
+    file(INSTALL ${CMAKE_SOURCE_DIR}/install.config.toml DESTINATION ${CMAKE_INSTALL_PREFIX}/logloader)
+    file(RENAME ${CMAKE_INSTALL_PREFIX}/logloader/install.config.toml ${CMAKE_INSTALL_PREFIX}/logloader/config.toml)
+")
