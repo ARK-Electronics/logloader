@@ -316,7 +316,14 @@ bool LogLoader::server_reachable()
 {
 	httplib::SSLClient cli(_settings.server);
 	auto res = cli.Get("/");
-	return res && res->status == 200;
+
+	bool success = res && res->status == 200;
+
+	if (!success) {
+		std::cout << "Connection failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+	}
+
+	return success;
 }
 
 bool LogLoader::send_log_to_server(const std::string& file_path)
