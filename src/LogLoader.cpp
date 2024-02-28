@@ -287,7 +287,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 		{"videoUrl", "", "", ""},
 		{"rating", "", "", ""},
 		{"windSpeed", "", "", ""},
-		{"public", "false", "", ""}
+		{"public", _settings.public_logs ? "true" : "false", "", ""}
 	};
 
 	// Add items to form

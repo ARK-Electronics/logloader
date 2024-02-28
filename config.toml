@@ -5,3 +5,4 @@ logging_directory = "logs"
 uploaded_logs_file = "uploaded_logs.txt"
 email = "jake@arkelectron.com"
 upload_enabled = true
+public_logs = false

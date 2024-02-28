@@ -15,6 +15,7 @@ public:
 		std::string uploaded_logs_file;
 		std::string mavsdk_connection_url;
 		bool upload_enabled;
+		bool public_logs;
 	};
 
 	LogLoader(const Settings& settings);

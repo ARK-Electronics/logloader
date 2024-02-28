@@ -34,7 +34,8 @@ int main(int argc, char* argv[])
 		.logging_directory = config["logging_directory"].value_or("logs/"),
 		.uploaded_logs_file = config["uploaded_logs_file"].value_or("uploaded_logs.txt"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.upload_enabled = config["upload_enabled"].value_or(false)
+		.upload_enabled = config["upload_enabled"].value_or(false),
+		.public_logs = config["public_logs"].value_or(false)
 	};
 
 	_log_loader = std::make_shared<LogLoader>(settings);
