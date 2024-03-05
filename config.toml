@@ -1,4 +1,4 @@
-email = "jake@arkelectron.com"
+email = "you@example.com"
 server = "review.px4.io"
 connection_url = "udp://127.0.0.1:14550"
 logging_directory = "/home/jetson/logloader/logs"
