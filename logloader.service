@@ -1,11 +1,12 @@
 [Unit]
 Description=Automatic ulog download and upload
 Wants=network.target
-After=syslog.target network-online.target
+Requires=mavlink-router.service
+After=syslog.target network.target mavlink-router.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/logloader
+ExecStart=/usr/local/bin/logloader
 Restart=on-failure
 RestartSec=5
 KillMode=process
