@@ -6,6 +6,8 @@ After=syslog.target network.target mavlink-router.service
 
 [Service]
 Type=simple
+User=jetson
+Group=jetson
 ExecStart=/usr/local/bin/logloader
 Restart=on-failure
 RestartSec=5
