@@ -8,7 +8,7 @@ https://github.com/ARK-Electronics/logloader/blob/18ab8df2907dfd2d564b5eee963d06
 Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. The downloading thread will only download logs with a datetime greater than the most recent log found locally in the `logging_directory`. If no logs are found locally only the most recent log will be downloaded. The upload thread will only upload logs that are not recorded in the `uploaded_logs_file`. Logs are named with the ISO 8601 date and time format **yyyy-mm-ddThh:mm:ssZ.ulg**.
 
 ### Build
-Install MAVSDK at `/usr/local` if you haven't already
+Install MAVSDK if you haven't already. It will be installed at `/usr/local/lib`.
 ```
 git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
 cd MAVSDK
@@ -58,7 +58,7 @@ Downloading...	2023-10-07T12:50:12Z	0.78112200MB	100%	3124.48800000 Kbps
 ```
 
 ### Install
-Installs the binary to `/usr/bin` and creates the application folder at `~/logloader`. You should create a copy of the config file and edit the settings that you wan't to use for the install. This file will be installed at `~/logloader/config.toml`.
+Installs the binary to `/usr/local/bin` and creates the application folder at `~/logloader`. Create a copy of `config.toml` and edit the settings. This file will be installed at `~/logloader/config.toml`.
 ```
 cp config.toml install.config.toml
 ```
