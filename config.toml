@@ -1,6 +1,6 @@
 email = "you@example.com"
 server = "review.px4.io"
-connection_url = "udp://127.0.0.1:14551"
+connection_url = "udp://:14551"
 logging_directory = "/home/jetson/logloader/logs"
 uploaded_logs_file = "/home/jetson/logloader/uploaded_logs.txt"
 upload_enabled = true
