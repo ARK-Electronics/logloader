@@ -8,6 +8,7 @@ After=syslog.target network.target mavlink-router.service
 Type=simple
 User=jetson
 Group=jetson
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ExecStart=/usr/local/bin/logloader
 Restart=on-failure
 RestartSec=5
