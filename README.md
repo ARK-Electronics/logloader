@@ -1,6 +1,8 @@
 ## PX4 Flight Log Management
 Downloads PX4 ulogs from the flight controller SD card and uploads to [PX4 Flight Review](https://review.px4.io/).
 
+[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/7GveNCRZMNM/0.jpg)](https://www.youtube.com/watch?v=7GveNCRZMNM)
+
 The **config.toml** file is used to configure the program settings.
 https://github.com/ARK-Electronics/logloader/blob/18ab8df2907dfd2d564b5eee963d06cebb54f0df/config.toml#L1-L7
 
