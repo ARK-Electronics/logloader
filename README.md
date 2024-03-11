@@ -10,7 +10,11 @@ https://github.com/ARK-Electronics/logloader/blob/16d8fe3682830f8aa33f957b3b7d8c
 Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. The downloading thread will only download logs with a datetime greater than the most recent log found locally in the `logging_directory`. If no logs are found locally only the most recent log will be downloaded. The upload thread will only upload logs that are not recorded in the `uploaded_logs_file`. Logs are named with the ISO 8601 date and time format **yyyy-mm-ddThh:mm:ssZ.ulg**.
 
 ### Build
-Install MAVSDK if you haven't already. It will be installed at `/usr/local/lib`.
+Install MAVSDK if you haven't already, the latest releases can be found at https://github.com/mavlink/MAVSDK/releases
+```
+sudo dpkg -i libmavsdk-dev_2.4.1_debian12_arm64.deb
+```
+Or install MAVSDK from source
 ```
 git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
 cd MAVSDK
