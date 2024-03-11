@@ -4,7 +4,7 @@ Downloads PX4 ulogs from the flight controller SD card and uploads to [PX4 Fligh
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/7GveNCRZMNM/0.jpg)](https://www.youtube.com/watch?v=7GveNCRZMNM)
 
 The **config.toml** file is used to configure the program settings.
-https://github.com/ARK-Electronics/logloader/blob/18ab8df2907dfd2d564b5eee963d06cebb54f0df/config.toml#L1-L7
+https://github.com/ARK-Electronics/logloader/blob/16d8fe3682830f8aa33f957b3b7d8c5c32287b50/config.toml#L1-L7
 
 ### Behavior
 Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. The downloading thread will only download logs with a datetime greater than the most recent log found locally in the `logging_directory`. If no logs are found locally only the most recent log will be downloaded. The upload thread will only upload logs that are not recorded in the `uploaded_logs_file`. Logs are named with the ISO 8601 date and time format **yyyy-mm-ddThh:mm:ssZ.ulg**.
