@@ -41,11 +41,11 @@ int main(int argc, char* argv[])
 
 	} catch (const toml::parse_error& err) {
 		std::cerr << "Parsing failed:\n" << err << "\n";
-		return 0;
+		return -1;
 
 	} catch (const std::exception& err) {
 		std::cerr << "Error: " << err.what() << "\n";
-		return 0;
+		return -1;
 	}
 
 	// Setup the LogLoader
@@ -73,7 +73,7 @@ int main(int argc, char* argv[])
 
 	std::cout << "exiting" << std::endl;
 
-	return 0;
+	return -1;
 }
 
 static void signal_handler(int signum)
