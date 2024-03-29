@@ -48,13 +48,16 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
+	auto logging_dir = config["logging_directory"].value_or("logs/");
+	auto uploaded_logs_file = config["uploaded_logs_file"].value_or("uploaded_logs.txt");
+
 	// Setup the LogLoader
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
 		.server = config["server"].value_or("logs.px4.io"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.logging_directory = config["logging_directory"].value_or("logs/"),
-		.uploaded_logs_file = config["uploaded_logs_file"].value_or("uploaded_logs.txt"),
+		.logging_directory = "/home/" + get_user_name() + "/logloader/logs/",
+		.uploaded_logs_file = "/home/" + get_user_name() + "/logloader/uploaded_logs.txt",
 		.upload_enabled = config["upload_enabled"].value_or(false),
 		.public_logs = config["public_logs"].value_or(false)
 	};
