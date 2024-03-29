@@ -13,7 +13,7 @@ sudo true
 
 pushd .
 cd /usr/src
-wget https://www.openssl.org/source/openssl-3.0.2.tar.gz
+sudo wget https://www.openssl.org/source/openssl-3.0.2.tar.gz
 sudo tar zxvf openssl-3.0.2.tar.gz
 cd openssl-3.0.2
 sudo ./Configure
