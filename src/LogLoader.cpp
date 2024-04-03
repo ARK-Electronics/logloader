@@ -343,18 +343,17 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	// Build multi-part form data
 	httplib::MultipartFormDataItems items = {
-		{"type", "personal", "", ""},
+		{"type", _settings.public_logs ? "flightreport" : "personal", "", ""}, // NOTE: backend logic is funky
 		{"description", "Uploaded by logloader", "", ""},
 		{"feedback", "", "", ""},
+		{"email", _settings.email, "", ""},
 		{"source", "auto", "", ""},
 		{"videoUrl", "", "", ""},
 		{"rating", "", "", ""},
 		{"windSpeed", "", "", ""},
-		{"public", _settings.public_logs ? "true" : "false", "", ""}
+		{"public", _settings.public_logs ? "true" : "false", "", ""},
 	};
 
-	// Add items to form
-	items.push_back({"email", _settings.email, "", ""});
 	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 	items.push_back({"filearg", content, file_path, "application/octet-stream"});
 
