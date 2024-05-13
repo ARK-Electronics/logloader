@@ -72,9 +72,21 @@ void LogLoader::run()
 	while (!_should_exit) {
 		// Check if vehicle is armed
 		//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
-		if (_telemetry->armed()) {
+		bool was_armed = false;
+
+		while (!_should_exit && _telemetry->armed()) {
+			// Stall here if we're armed
+			was_armed = true;
 			std::this_thread::sleep_for(std::chrono::seconds(1));
-			continue;
+		}
+
+		if (_should_exit) {
+			return;
+		}
+
+		if (was_armed) {
+			// Stall for a few seconds after disarm to allow logger to finish writing
+			std::this_thread::sleep_for(std::chrono::seconds(3));
 		}
 
 		if (!request_log_entries()) {
