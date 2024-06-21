@@ -2,12 +2,6 @@
 
 # https://unix.stackexchange.com/questions/696381/upgrading-openssl-to-version-3-0-2-from-source
 
-# Check if it's already installed
-if openssl version | grep -q '3.0.2'; then
-    echo "OpenSSL 3.0.2 is already installed."
-    exit 0
-fi
-
 # Prompt for sudo password at the start to cache it
 sudo true
 
