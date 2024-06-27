@@ -1,4 +1,4 @@
-email = "you@example.com"
+email = "jake@arkelectron.com"
 server = "review.px4.io"
 connection_url = "udp://:14551"
 upload_enabled = true

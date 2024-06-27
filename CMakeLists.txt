@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.9 LANGUAGES CXX)
 
+add_compile_options(-Wall -Wextra -Wpedantic -Wunused)
+
 find_package(OpenSSL 3.0.2 REQUIRED)
 
 message(STATUS "OpenSSL version: ${OPENSSL_VERSION}")
@@ -34,3 +36,9 @@ target_link_libraries(logloader
 
 # Binary installation
 install(TARGETS logloader RUNTIME DESTINATION bin)
+# Create directories
+install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader)
+install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader/logs)
+# Install configuration file
+# Make sure to add your default 'config.toml' to the source directory under 'config/default_config.toml'
+install(FILES config.toml DESTINATION $ENV{HOME}/.local/share/logloader)

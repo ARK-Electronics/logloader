@@ -5,12 +5,6 @@ all:
 
 install: clean all
 	@sudo cmake --install build
-	@mkdir -p ${HOME}/logloader/logs
-	@if [ -f install.config.toml ]; then \
-		cp install.config.toml ${HOME}/logloader/config.toml; \
-	else \
-		cp config.toml ${HOME}/logloader/config.toml; \
-	fi
 
 clean:
 	@rm -rf build
