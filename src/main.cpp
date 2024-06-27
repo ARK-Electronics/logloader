@@ -20,7 +20,9 @@ int main()
 	toml::table config;
 
 	try {
-		std::string config_path = std::string(getenv("HOME")) + "/.config/logloader/config.toml";
+		std::string config_path = std::string(getenv("HOME")) + "/.local/share/logloader/config.toml";
+		std::cout << "config_path: " << config_path << std::endl;
+
 		config = toml::parse_file(config_path);
 
 	} catch (const toml::parse_error& err) {
@@ -32,8 +34,11 @@ int main()
 		return -1;
 	}
 
-	std::string logs_dir = std::string(getenv("HOME")) + "/.config/logloader/logs/";
-	std::string uploaded_logs_file = std::string(getenv("HOME")) + "/.config/logloader/uploaded_logs.txt";
+	std::string logs_dir = std::string(getenv("HOME")) + "/.local/share/logloader/logs/";
+	std::string uploaded_logs_file = std::string(getenv("HOME")) + "/.local/share/logloader/uploaded_logs.txt";
+
+	std::cout << "logs_dir: " << logs_dir << std::endl;
+	std::cout << "uploaded_logs_file: " << uploaded_logs_file << std::endl;
 
 	// Setup the LogLoader
 	LogLoader::Settings settings = {

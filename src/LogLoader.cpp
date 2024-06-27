@@ -115,6 +115,7 @@ void LogLoader::run()
 		// Periodically request log list
 		if (!_should_exit) {
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
+			std::cout << "Sleeping..." << std::endl;
 			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
 		}
 	}
@@ -177,7 +178,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 	{
 		std::lock_guard<std::mutex> lock(_current_download_mutex);
 		_current_download.second = false;
-		_current_download.first = download_path;
+		_current_download.first = std::filesystem::path(download_path).filename().string();
 	}
 
 	auto time_start = std::chrono::steady_clock::now();
@@ -283,25 +284,24 @@ std::vector<std::string> LogLoader::get_logs_to_upload()
 	std::vector<std::string> logs;
 
 	for (const auto& it : fs::directory_iterator(_settings.logging_directory)) {
-		std::string log_path = it.path();
-
-		bool should_upload = !log_has_been_uploaded(log_path) && log_download_complete(log_path);
+		std::string filename = it.path().filename().string();
+		bool should_upload = !log_has_been_uploaded(filename) && log_download_complete(filename);
 
 		if (should_upload) {
-			logs.push_back(log_path);
+			logs.push_back(it.path());
 		}
 	}
 
 	return logs;
 }
 
-bool LogLoader::log_has_been_uploaded(const std::string& file_path)
+bool LogLoader::log_has_been_uploaded(const std::string& filename)
 {
 	std::ifstream file(_settings.uploaded_logs_file);
 	std::string line;
 
 	while (std::getline(file, line)) {
-		if (line == file_path) {
+		if (line == filename) {
 			return true;
 		}
 	}
@@ -309,11 +309,11 @@ bool LogLoader::log_has_been_uploaded(const std::string& file_path)
 	return false;
 }
 
-bool LogLoader::log_download_complete(const std::string& log_path)
+bool LogLoader::log_download_complete(const std::string& filename)
 {
 	std::lock_guard<std::mutex> lock(_current_download_mutex);
 
-	if (_current_download.first == log_path) {
+	if (_current_download.first == filename) {
 		return _current_download.second;
 	}
 
@@ -323,7 +323,7 @@ bool LogLoader::log_download_complete(const std::string& log_path)
 void LogLoader::mark_log_as_uploaded(const std::string& file_path)
 {
 	std::ofstream file(_settings.uploaded_logs_file, std::ios::app);
-	file << file_path << std::endl;
+	file << std::filesystem::path(file_path).filename().string() << std::endl;
 }
 
 bool LogLoader::server_reachable()

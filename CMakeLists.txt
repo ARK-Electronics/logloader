@@ -37,8 +37,14 @@ target_link_libraries(logloader
 # Binary installation
 install(TARGETS logloader RUNTIME DESTINATION bin)
 # Create directories
-install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader)
-install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader/logs)
+install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader DIRECTORY_PERMISSIONS
+    OWNER_WRITE OWNER_READ OWNER_EXECUTE
+    GROUP_WRITE GROUP_READ GROUP_EXECUTE
+    WORLD_WRITE WORLD_READ WORLD_EXECUTE)
+install(DIRECTORY DESTINATION $ENV{HOME}/.local/share/logloader/logs DIRECTORY_PERMISSIONS
+    OWNER_WRITE OWNER_READ OWNER_EXECUTE
+    GROUP_WRITE GROUP_READ GROUP_EXECUTE
+    WORLD_WRITE WORLD_READ WORLD_EXECUTE)
 # Install configuration file
 # Make sure to add your default 'config.toml' to the source directory under 'config/default_config.toml'
 install(FILES config.toml DESTINATION $ENV{HOME}/.local/share/logloader)

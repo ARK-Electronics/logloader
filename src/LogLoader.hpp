@@ -51,7 +51,7 @@ private:
 	std::vector<mavsdk::LogFiles::Entry> _log_entries;
 
 	std::mutex _current_download_mutex;
-	std::pair<std::string, bool> _current_download;
+	std::pair<std::string, bool> _current_download {};
 
 	std::atomic<bool> _should_exit = false;
 	std::atomic<bool> _exiting = false;
