@@ -200,7 +200,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 		auto now = std::chrono::steady_clock::now();
 
 		// Calculate data rate in Kbps
-		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0) / 1000.0) / std::chrono::duration_cast<std::chrono::seconds>(now -
+		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0)) / std::chrono::duration_cast<std::chrono::milliseconds>(now -
 				   time_start).count(); // Convert bytes to bits and then to Kbps
 
 		if (_should_exit) {
@@ -210,16 +210,16 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			return;
 		}
 
-		if (result != mavsdk::LogFiles::Result::Next) {
-			prom.set_value(result);
-		}
-
-		std::cout << "Downloading..."
+		std::cout << "Downloading: "
 			  << std::setw(24) << std::left << entry.date
 			  << std::setw(8) << std::fixed << std::setprecision(2) << entry.size_bytes / 1e6 << "MB"
 			  << std::setw(6) << std::right << int(progress.progress * 100.0f) << "%"
 			  << std::setw(12) << std::fixed << std::setprecision(2) << rate_kbps << " Kbps"
 			  << std::flush << std::endl;
+
+		if (result != mavsdk::LogFiles::Result::Next) {
+			prom.set_value(result);
+		}
 	});
 
 	auto result = future_result.get();
@@ -382,7 +382,10 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	items.push_back({"filearg", content, file_path, "application/octet-stream"});
 
 	// Post multi-part form
-	std::cout << std::endl << "Uploading: " << fs::path(file_path).filename() << "\t" << fs::file_size(file_path) / 1e6 << "MB" << std::endl;
+	std::cout << "Uploading: "
+		  << std::setw(24) << std::left << fs::path(file_path).filename().string()
+		  << std::setw(8) << std::fixed << std::setprecision(2) << fs::file_size(file_path) / 1e6 << "MB"
+		  << std::flush << std::endl;
 
 	httplib::SSLClient cli(_settings.server);
 
