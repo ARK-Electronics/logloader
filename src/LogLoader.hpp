@@ -30,8 +30,8 @@ private:
 	// Download
 	bool request_log_entries();
 	void download_first_log();
-	void download_all_logs(const std::string& most_recent_log = std::string("2023-10-05T15:06:42Z"));
-	bool download_log(const mavsdk::LogFiles::Entry& entry, const std::string& download_path);
+	void download_logs_greater_than(const mavsdk::LogFiles::Entry& most_recent);
+	bool download_log(const mavsdk::LogFiles::Entry& entry);
 	bool log_download_complete(const std::string& log_path);
 
 	// Upload
@@ -41,8 +41,9 @@ private:
 	bool server_reachable();
 	bool log_has_been_uploaded(const std::string& file_path);
 	void mark_log_as_uploaded(const std::string& file_path);
+	std::string filepath_from_entry(const mavsdk::LogFiles::Entry entry);
 
-	std::string find_most_recent_log();
+	mavsdk::LogFiles::Entry find_most_recent_log();
 
 	Settings _settings;
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;

@@ -72,6 +72,8 @@ static void signal_handler(int signum)
 {
 	(void)signum;
 
+	std::cout << "signal_handler" << std::endl;
+
 	if (_log_loader.get()) _log_loader->stop();
 
 	_should_exit = true;

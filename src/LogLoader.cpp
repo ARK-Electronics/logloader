@@ -14,8 +14,8 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 {
 	// Disable mavsdk noise
 	// mavsdk::log::subscribe([](...) {
-	// 	// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
-	// 	return true;
+	//  // https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
+	//  return true;
 	// });
 
 	std::cout << std::fixed << std::setprecision(8);
@@ -91,25 +91,29 @@ void LogLoader::run()
 
 		if (!request_log_entries()) {
 			std::cout << "Failed to get logs" << std::endl;
-			std::this_thread::sleep_for(std::chrono::seconds(1));
+			std::this_thread::sleep_for(std::chrono::seconds(5));
 			continue;
 		}
 
 		std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
 
-		for (auto& e : _log_entries) {
-			std::cout << e.id << "\t" << e.date << "\t" << e.size_bytes / 1e6 << "MB" << std::endl;
+		// Pretty print them
+		int indexWidth = std::to_string(_log_entries.size() - 1).length();
+
+		for (const auto& e : _log_entries) {
+			std::cout << std::setw(indexWidth) << std::right << e.id << "\t"  // Right-align the index
+				  << e.date << "\t" << std::fixed << std::setprecision(2) << e.size_bytes / 1e6 << "MB" << std::endl;
 		}
 
 		// If we have no logs, just download the latest
-		std::string most_recent_log = find_most_recent_log();
+		auto most_recent_log = find_most_recent_log();
 
-		if (most_recent_log.empty()) {
+		if (most_recent_log.size_bytes == 0) {
 			download_first_log();
 
 		} else {
 			// Otherwise download all logs more recent than the latest log we have locally
-			download_all_logs(most_recent_log);
+			download_logs_greater_than(most_recent_log);
 		}
 
 		// Periodically request log list
@@ -141,11 +145,10 @@ void LogLoader::download_first_log()
 {
 	std::cout << "No local logs found, downloading latest" << std::endl;
 	auto entry = _log_entries.back();
-	auto log_path = _settings.logging_directory + entry.date + ".ulg";
-	download_log(entry, log_path);
+	download_log(entry);
 }
 
-void LogLoader::download_all_logs(const std::string& most_recent_log)
+void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_recent)
 {
 	// Check which logs need to be downloaded
 	for (auto& entry : _log_entries) {
@@ -154,25 +157,27 @@ void LogLoader::download_all_logs(const std::string& most_recent_log)
 			return;
 		}
 
-		auto log_path = _settings.logging_directory + entry.date + ".ulg";
+		auto log_path = filepath_from_entry(entry);
 
 		if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
 			std::cout << "Incomplete log, re-downloading..." << std::endl;
 			std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << fs::file_size(log_path) << std::endl;
 
 			fs::remove(log_path);
-			download_log(entry, log_path);
+			download_log(entry);
 
-		} else if (!fs::exists(log_path) && entry.date > most_recent_log) {
-			download_log(entry, log_path);
+		} else if (!fs::exists(log_path) && entry.id > most_recent.id) {
+			download_log(entry);
 		}
 	}
 }
 
-bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::string& download_path)
+bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 {
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
+
+	auto download_path = filepath_from_entry(entry);
 
 	// Mark the file as currently being downloaded
 	{
@@ -195,8 +200,6 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry, const std::st
 		// Calculate data rate in Kbps
 		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0) / 1000.0) / std::chrono::duration_cast<std::chrono::seconds>(now -
 				   time_start).count(); // Convert bytes to bits and then to Kbps
-
-		// TODO: logic to cancel log download
 
 		if (_should_exit) {
 			_exiting = true;
@@ -326,6 +329,11 @@ void LogLoader::mark_log_as_uploaded(const std::string& file_path)
 	file << std::filesystem::path(file_path).filename().string() << std::endl;
 }
 
+std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
+{
+	return _settings.logging_directory + "LOG" + std::to_string(entry.id) + "_" + entry.date + ".ulg";
+}
+
 bool LogLoader::server_reachable()
 {
 	httplib::SSLClient cli(_settings.server);
@@ -388,24 +396,31 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	}
 }
 
-std::string LogLoader::find_most_recent_log()
+mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 {
-	// Regex pattern to match "yyyy-mm-ddThh:mm:ssZ.ulg" format
-	std::regex log_pattern("^(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg$");
-	std::string latest_log;
+	mavsdk::LogFiles::Entry entry = {};
+	// Regex pattern to match "LOG<index>_<datetime>.ulg" format
+	std::regex log_pattern("LOG(\\d+)_(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg");
+	int max_index = -1; // Start with -1 to ensure any found index will be greater
 
-	for (const auto& entry : fs::directory_iterator(_settings.logging_directory)) {
-		std::string filename = entry.path().filename().string();
+	for (const auto& dir_iter : fs::directory_iterator(_settings.logging_directory)) {
+		std::string filename = dir_iter.path().filename().string();
+
 		std::smatch matches;
 
-		if (std::regex_search(filename, matches, log_pattern) && matches.size() > 1) {
-			std::string log = matches[1].str();
+		if (std::regex_search(filename, matches, log_pattern) && matches.size() > 2) {
+			int index = std::stoi(matches[1].str()); // Index is in the first capture group
+			std::string datetime = matches[2].str(); // Datetime is in the second capture group
 
-			if (log > latest_log) {
-				latest_log = log;
+			if (index > max_index) {
+				max_index = index;
+				// construct log Entry
+				entry.id = index;
+				entry.date = datetime;
+				entry.size_bytes = dir_iter.file_size();
 			}
 		}
 	}
 
-	return latest_log;
+	return entry;
 }
