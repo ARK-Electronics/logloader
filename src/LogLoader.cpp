@@ -179,7 +179,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 
 	auto download_path = filepath_from_entry(entry);
 
-	std::cout << "Downloading " << download_path << std::endl;
+	std::cout << "Downloading  " << download_path << std::endl;
 
 	// Mark the file as currently being downloaded
 	{
@@ -210,7 +210,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			return;
 		}
 
-		std::cout << "Downloading: "
+		std::cout << "Downloading:  "
 			  << std::setw(24) << std::left << entry.date
 			  << std::setw(8) << std::fixed << std::setprecision(2) << entry.size_bytes / 1e6 << "MB"
 			  << std::setw(6) << std::right << int(progress.progress * 100.0f) << "%"
@@ -382,7 +382,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	items.push_back({"filearg", content, file_path, "application/octet-stream"});
 
 	// Post multi-part form
-	std::cout << "Uploading: "
+	std::cout << "Uploading:  "
 		  << std::setw(24) << std::left << fs::path(file_path).filename().string()
 		  << std::setw(8) << std::fixed << std::setprecision(2) << fs::file_size(file_path) / 1e6 << "MB"
 		  << std::flush << std::endl;
@@ -393,7 +393,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	if (res && res->status == 302) {
 		std::string url = "https://" + _settings.server + res->get_header_value("Location");
-		std::cout << std::endl << "Upload success:\t" <<  url << std::endl;
+		std::cout << std::endl << "Upload success:  " <<  url << std::endl;
 		return true;
 	}
 
