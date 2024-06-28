@@ -179,6 +179,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 
 	auto download_path = filepath_from_entry(entry);
 
+	std::cout << "Downloading " << download_path << std::endl;
+
 	// Mark the file as currently being downloaded
 	{
 		std::lock_guard<std::mutex> lock(_current_download_mutex);
