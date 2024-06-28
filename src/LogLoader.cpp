@@ -354,10 +354,6 @@ bool LogLoader::server_reachable()
 
 bool LogLoader::send_log_to_server(const std::string& file_path)
 {
-	// std::this_thread::sleep_for(std::chrono::seconds(1));
-	// std::cout << std::endl << "Upload success: " << std::endl;
-	// return true;
-
 	std::ifstream file(file_path, std::ios::binary);
 
 	if (!file) {
@@ -393,7 +389,7 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	if (res && res->status == 302) {
 		std::string url = "https://" + _settings.server + res->get_header_value("Location");
-		std::cout << std::endl << "Upload success:  " <<  url << std::endl;
+		std::cout << std::endl << "Upload success:" << std::endl << url << std::endl;
 		return true;
 	}
 
