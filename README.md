@@ -28,7 +28,7 @@ openssl version
 ```
 A script is provided for your convenience
 ```
-./upgrade_openssl.sh
+./install_openssl.sh
 ```
 
 Clone this repository
