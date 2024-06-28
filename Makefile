@@ -1,7 +1,9 @@
+PROJECT_NAME="logloader"
+
 all:
 	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
 	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
-	@size build/logloader
+	@size build/${PROJECT_NAME}
 
 install: clean all
 	@sudo cmake --install build

@@ -20,10 +20,8 @@ int main()
 	toml::table config;
 
 	try {
-		std::string config_path = std::string(getenv("HOME")) + "/.local/share/logloader/config.toml";
-		std::cout << "config_path: " << config_path << std::endl;
 
-		config = toml::parse_file(config_path);
+		config = toml::parse_file(std::string(getenv("HOME")) + "/.local/share/logloader/config.toml");
 
 	} catch (const toml::parse_error& err) {
 		std::cerr << "Parsing failed:\n" << err << "\n";
