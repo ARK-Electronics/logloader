@@ -1,16 +1,12 @@
+PROJECT_NAME="logloader"
+
 all:
 	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
 	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
-	@size build/logloader
+	@size build/${PROJECT_NAME}
 
 install: clean all
 	@sudo cmake --install build
-	@mkdir -p ${HOME}/logloader/logs
-	@if [ -f install.config.toml ]; then \
-		cp install.config.toml ${HOME}/logloader/config.toml; \
-	else \
-		cp config.toml ${HOME}/logloader/config.toml; \
-	fi
 
 clean:
 	@rm -rf build
