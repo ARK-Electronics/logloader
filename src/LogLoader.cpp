@@ -108,6 +108,8 @@ void LogLoader::run()
 		// If we have no logs, just download the latest
 		auto most_recent_log = find_most_recent_log();
 
+		std::cout << "most_recent: id " << most_recent_log.id << " size " << most_recent_log.size_bytes << std::endl;
+
 		if (most_recent_log.size_bytes == 0) {
 			download_first_log();
 
@@ -157,16 +159,20 @@ void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_r
 			return;
 		}
 
-		auto log_path = filepath_from_entry(entry);
+		bool new_log = entry.id > most_recent.id;
+		bool partial_log = (entry.id == most_recent.id) && (entry.size_bytes > most_recent.size_bytes);
 
-		if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
-			std::cout << "Incomplete log, re-downloading..." << std::endl;
-			std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << fs::file_size(log_path) << std::endl;
+		if (new_log || partial_log) {
+			if (partial_log) {
+				std::cout << "Incomplete log, re-downloading..." << std::endl;
+				std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << most_recent.size_bytes << std::endl;
 
-			fs::remove(log_path);
-			download_log(entry);
+				// If the timestamps are the same then the logfile already exists and we must remove it first
+				if (entry.date == most_recent.date) {
+					fs::remove(filepath_from_entry(entry));
+				}
+			}
 
-		} else if (!fs::exists(log_path) && entry.id > most_recent.id) {
 			download_log(entry);
 		}
 	}
@@ -405,6 +411,7 @@ mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 	// Regex pattern to match "LOG<index>_<datetime>.ulg" format
 	std::regex log_pattern("LOG(\\d+)_(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg");
 	int max_index = -1; // Start with -1 to ensure any found index will be greater
+	std::string latest_datetime; // To keep track of the latest datetime for the highest index
 
 	for (const auto& dir_iter : fs::directory_iterator(_settings.logging_directory)) {
 		std::string filename = dir_iter.path().filename().string();
@@ -415,8 +422,10 @@ mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 			int index = std::stoi(matches[1].str()); // Index is in the first capture group
 			std::string datetime = matches[2].str(); // Datetime is in the second capture group
 
-			if (index > max_index) {
+			// Check if this log has a higher index or same index with a later timestamp
+			if (index > max_index || (index == max_index && datetime > latest_datetime)) {
 				max_index = index;
+				latest_datetime = datetime;
 				// construct log Entry
 				entry.id = index;
 				entry.date = datetime;

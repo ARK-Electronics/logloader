@@ -20,7 +20,6 @@ int main()
 	toml::table config;
 
 	try {
-
 		config = toml::parse_file(std::string(getenv("HOME")) + "/.local/share/logloader/config.toml");
 
 	} catch (const toml::parse_error& err) {
