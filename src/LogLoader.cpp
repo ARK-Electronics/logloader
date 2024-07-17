@@ -341,7 +341,9 @@ void LogLoader::mark_log_as_uploaded(const std::string& file_path)
 
 std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 {
-	return _settings.logging_directory + "LOG" + std::to_string(entry.id) + "_" + entry.date + ".ulg";
+	std::ostringstream ss;
+	ss << _settings.logging_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
+	return ss.str();
 }
 
 bool LogLoader::server_reachable()
