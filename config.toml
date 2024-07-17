@@ -1,5 +1,5 @@
-email = "logs@arkelectron.com"
+email = "you@example.com"
 server = "review.px4.io"
 connection_url = "udp://:14551"
-upload_enabled = true
+upload_enabled = false
 public_logs = false
