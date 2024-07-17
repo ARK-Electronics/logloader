@@ -108,7 +108,7 @@ void LogLoader::run()
 		// If we have no logs, just download the latest
 		auto most_recent_log = find_most_recent_log();
 
-		if (most_recent_log.size_bytes == 0) {
+		if (most_recent_log.date.empty()) {
 			download_first_log();
 
 		} else {
@@ -165,9 +165,10 @@ void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_r
 				std::cout << "Incomplete log, re-downloading..." << std::endl;
 				std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << most_recent.size_bytes << std::endl;
 
-				// If the timestamps are the same then the logfile already exists and we must remove it first
-				if (entry.date == most_recent.date) {
-					fs::remove(filepath_from_entry(entry));
+				auto log_path = filepath_from_entry(entry);
+
+				if (fs::exists(log_path)) {
+					fs::remove(log_path);
 				}
 			}
 
