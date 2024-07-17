@@ -108,8 +108,6 @@ void LogLoader::run()
 		// If we have no logs, just download the latest
 		auto most_recent_log = find_most_recent_log();
 
-		std::cout << "most_recent: id " << most_recent_log.id << " size " << most_recent_log.size_bytes << std::endl;
-
 		if (most_recent_log.size_bytes == 0) {
 			download_first_log();
 
