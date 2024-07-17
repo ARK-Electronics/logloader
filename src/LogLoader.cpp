@@ -222,6 +222,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			  << std::flush << std::endl;
 
 		if (result != mavsdk::LogFiles::Result::Next) {
+			double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - time_start).count() / 1000.;
+			std::cout << "Finished in " << std::setprecision(2) << seconds << " seconds" << std::endl;
 			prom.set_value(result);
 		}
 	});
