@@ -108,7 +108,7 @@ void LogLoader::run()
 		// If we have no logs, just download the latest
 		auto most_recent_log = find_most_recent_log();
 
-		if (most_recent_log.size_bytes == 0) {
+		if (most_recent_log.date.empty()) {
 			download_first_log();
 
 		} else {
@@ -157,16 +157,21 @@ void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_r
 			return;
 		}
 
-		auto log_path = filepath_from_entry(entry);
+		bool new_log = entry.id > most_recent.id;
+		bool partial_log = (entry.id == most_recent.id) && (entry.size_bytes > most_recent.size_bytes);
 
-		if (fs::exists(log_path) && fs::file_size(log_path) < entry.size_bytes) {
-			std::cout << "Incomplete log, re-downloading..." << std::endl;
-			std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << fs::file_size(log_path) << std::endl;
+		if (new_log || partial_log) {
+			if (partial_log) {
+				std::cout << "Incomplete log, re-downloading..." << std::endl;
+				std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << most_recent.size_bytes << std::endl;
 
-			fs::remove(log_path);
-			download_log(entry);
+				auto log_path = filepath_from_entry(entry);
 
-		} else if (!fs::exists(log_path) && entry.id > most_recent.id) {
+				if (fs::exists(log_path)) {
+					fs::remove(log_path);
+				}
+			}
+
 			download_log(entry);
 		}
 	}
@@ -218,6 +223,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			  << std::flush << std::endl;
 
 		if (result != mavsdk::LogFiles::Result::Next) {
+			double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - time_start).count() / 1000.;
+			std::cout << "Finished in " << std::setprecision(2) << seconds << " seconds" << std::endl;
 			prom.set_value(result);
 		}
 	});
@@ -335,7 +342,9 @@ void LogLoader::mark_log_as_uploaded(const std::string& file_path)
 
 std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 {
-	return _settings.logging_directory + "LOG" + std::to_string(entry.id) + "_" + entry.date + ".ulg";
+	std::ostringstream ss;
+	ss << _settings.logging_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
+	return ss.str();
 }
 
 bool LogLoader::server_reachable()
@@ -405,6 +414,7 @@ mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 	// Regex pattern to match "LOG<index>_<datetime>.ulg" format
 	std::regex log_pattern("LOG(\\d+)_(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg");
 	int max_index = -1; // Start with -1 to ensure any found index will be greater
+	std::string latest_datetime; // To keep track of the latest datetime for the highest index
 
 	for (const auto& dir_iter : fs::directory_iterator(_settings.logging_directory)) {
 		std::string filename = dir_iter.path().filename().string();
@@ -415,8 +425,10 @@ mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 			int index = std::stoi(matches[1].str()); // Index is in the first capture group
 			std::string datetime = matches[2].str(); // Datetime is in the second capture group
 
-			if (index > max_index) {
+			// Check if this log has a higher index or same index with a later timestamp
+			if (index > max_index || (index == max_index && datetime > latest_datetime)) {
 				max_index = index;
+				latest_datetime = datetime;
 				// construct log Entry
 				entry.id = index;
 				entry.date = datetime;
