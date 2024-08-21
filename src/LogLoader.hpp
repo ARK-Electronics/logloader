@@ -55,8 +55,10 @@ private:
 	std::pair<std::string, bool> _current_download {};
 
 	std::atomic<bool> _should_exit = false;
-	std::atomic<bool> _exiting = false;
+	std::atomic<bool> _download_cancelled = false;
 
 	std::condition_variable _exit_cv;
 	std::mutex _exit_cv_mutex;
+
+	bool _loop_disabled = false;
 };

@@ -70,22 +70,18 @@ void LogLoader::run()
 	auto upload_thread = std::thread(&LogLoader::upload_logs_thread, this);
 
 	while (!_should_exit) {
-		// Check if vehicle is armed
-		//  -- in the future we check if MAV_SYS_STATUS_LOGGING bit is high
-		bool was_armed = false;
+		// Check if vehicle is armed or if the logger is running
+		bool logger_running = _telemetry->sys_status_sensors().enabled & MAV_SYS_STATUS_LOGGING;
+		bool vehicle_armed = _telemetry->armed();
 
-		while (!_should_exit && _telemetry->armed()) {
-			// Stall here if we're armed
-			was_armed = true;
+		if (logger_running || vehicle_armed) {
+			_loop_disabled = true;
 			std::this_thread::sleep_for(std::chrono::seconds(1));
-		}
+			continue;
 
-		if (_should_exit) {
-			return;
-		}
-
-		if (was_armed) {
-			// Stall for a few seconds after disarm to allow logger to finish writing
+		} else if (_loop_disabled) {
+			_loop_disabled = false;
+			// Stall for a few seconds to allow logger to finish writing
 			std::this_thread::sleep_for(std::chrono::seconds(3));
 		}
 
@@ -153,7 +149,7 @@ void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_r
 	// Check which logs need to be downloaded
 	for (auto& entry : _log_entries) {
 
-		if (_telemetry->armed() || _should_exit) {
+		if (_should_exit) {
 			return;
 		}
 
@@ -200,7 +196,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 		download_path,
 	[&prom, &entry, &time_start, this](mavsdk::LogFiles::Result result, mavsdk::LogFiles::ProgressData progress) {
 
-		if (_exiting) return;
+		if (_download_cancelled) return;
 
 		auto now = std::chrono::steady_clock::now();
 
@@ -209,7 +205,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 				   time_start).count(); // Convert bytes to bits and then to Kbps
 
 		if (_should_exit) {
-			_exiting = true;
+			_download_cancelled = true;
 			prom.set_value(mavsdk::LogFiles::Result::Timeout);
 			std::cout << std::endl << "Download cancelled.. exiting" << std::endl;
 			return;
@@ -260,7 +256,7 @@ void LogLoader::upload_logs_thread()
 
 	while (!_should_exit) {
 
-		if (_telemetry->armed()) {
+		if (_loop_disabled) {
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 		}
@@ -270,8 +266,19 @@ void LogLoader::upload_logs_thread()
 
 		for (const auto& log_path : logs_to_upload) {
 
-			// Break if armed
-			if (_telemetry->armed() || _should_exit) {
+			if (_should_exit) {
+				return;
+			}
+
+			if (_loop_disabled) {
+				break;
+			}
+
+			if (fs::file_size(log_path) == 0) {
+				// TODO: investigate root cause
+				// Skip and delete erroneous logs of size zero
+				std::cout << "Deleting erroneous zero length log file" << std::endl;
+				fs::remove(log_path);
 				continue;
 			}
 
