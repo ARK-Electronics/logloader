@@ -392,12 +392,22 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 		  << std::setw(8) << std::fixed << std::setprecision(2) << fs::file_size(file_path) / 1e6 << "MB"
 		  << std::flush << std::endl;
 
-	httplib::SSLClient cli(_settings.server);
+	httplib::Result res;
+	std::string preface;
 
-	auto res = cli.Post("/upload", items);
+	if (_settings.server.find("https") != std::string::npos) {
+		preface = "https";
+		httplib::SSLClient cli(_settings.server);
+		res = cli.Post("/upload", items);
+
+	} else {
+		preface = "http";
+		httplib::Client cli(_settings.server);
+		res = cli.Post("/upload", items);
+	}
 
 	if (res && res->status == 302) {
-		std::string url = "https://" + _settings.server + res->get_header_value("Location");
+		std::string url = preface + "://" + _settings.server + res->get_header_value("Location");
 		std::cout << std::endl << "Upload success:" << std::endl << url << std::endl;
 		return true;
 	}
