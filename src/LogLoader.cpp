@@ -284,8 +284,6 @@ void LogLoader::upload_logs_thread()
 					std::cout << "Sending log to server failed" << std::endl;
 				}
 
-			} else {
-				std::cout << "Connection with server failed" << std::endl;
 			}
 		}
 
@@ -349,13 +347,21 @@ std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 
 bool LogLoader::server_reachable()
 {
-	httplib::SSLClient cli(_settings.server);
-	auto res = cli.Get("/");
+	httplib::Result res;
+
+	if (_settings.server.find("https") != std::string::npos) {
+		httplib::SSLClient cli(_settings.server);
+		res = cli.Get("/");
+
+	} else {
+		httplib::Client cli(_settings.server);
+		res = cli.Get("/");
+	}
 
 	bool success = res && res->status == 200;
 
 	if (!success) {
-		std::cout << "Connection failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Connection to " << _settings.server << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 	}
 
 	return success;
@@ -392,12 +398,19 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 		  << std::setw(8) << std::fixed << std::setprecision(2) << fs::file_size(file_path) / 1e6 << "MB"
 		  << std::flush << std::endl;
 
-	httplib::SSLClient cli(_settings.server);
+	httplib::Result res;
 
-	auto res = cli.Post("/upload", items);
+	if (_settings.server.find("https") != std::string::npos) {
+		httplib::SSLClient cli(_settings.server);
+		res = cli.Post("/upload", items);
+
+	} else {
+		httplib::Client cli(_settings.server);
+		res = cli.Post("/upload", items);
+	}
 
 	if (res && res->status == 302) {
-		std::string url = "https://" + _settings.server + res->get_header_value("Location");
+		std::string url = _settings.server + res->get_header_value("Location");
 		std::cout << std::endl << "Upload success:" << std::endl << url << std::endl;
 		return true;
 	}
