@@ -6,7 +6,7 @@ all:
 	@size build/${PROJECT_NAME}
 
 install: clean all
-	@sudo cmake --install build
+	@bash install.sh
 
 clean:
 	@rm -rf build
