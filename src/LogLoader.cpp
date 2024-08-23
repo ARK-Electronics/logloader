@@ -71,7 +71,8 @@ void LogLoader::run()
 
 	while (!_should_exit) {
 		// Check if vehicle is armed or if the logger is running
-		bool logger_running = _telemetry->sys_status_sensors().enabled & MAV_SYS_STATUS_LOGGING;
+		// bool logger_running = _telemetry->sys_status_sensors().enabled & MAV_SYS_STATUS_LOGGING;
+		bool logger_running = false;
 		bool vehicle_armed = _telemetry->armed();
 
 		if (logger_running || vehicle_armed) {
