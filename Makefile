@@ -5,7 +5,7 @@ all:
 	@cmake -Bbuild -H.; cmake --build build -j$(nproc)
 	@size build/${PROJECT_NAME}
 
-install: clean all
+install:
 	@bash install.sh
 
 clean:
