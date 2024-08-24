@@ -356,23 +356,52 @@ std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 	return ss.str();
 }
 
+std::pair<std::string, LogLoader::Protocol> LogLoader::get_server_domain_and_protocol(std::string url)
+{
+	std::pair<std::string, Protocol> result;
+
+	std::string http_prefix = "http://";
+	std::string https_prefix = "https://";
+
+	size_t pos = std::string::npos;
+
+	if ((pos = url.find(https_prefix)) != std::string::npos) {
+		result.first = url.substr(pos + https_prefix.length());
+		result.second = Protocol::Https;
+
+	} else if ((pos = url.find(http_prefix)) != std::string::npos) {
+		result.first = url.substr(pos + http_prefix.length());
+		result.second = Protocol::Http;
+
+	} else {
+		result.first = url;
+		result.second = Protocol::Https;
+	}
+
+	std::cout << result.first << " using " << int(result.second) << std::endl;
+
+	return result;
+}
+
 bool LogLoader::server_reachable()
 {
+	auto info = get_server_domain_and_protocol(_settings.server);
+
 	httplib::Result res;
 
-	if (_settings.server.find("https") != std::string::npos) {
-		httplib::SSLClient cli(_settings.server);
+	if (info.second == Protocol::Https) {
+		httplib::SSLClient cli(info.first);
 		res = cli.Get("/");
 
 	} else {
-		httplib::Client cli(_settings.server);
+		httplib::Client cli(info.first);
 		res = cli.Get("/");
 	}
 
 	bool success = res && res->status == 200;
 
 	if (!success) {
-		std::cout << "Connection to " << _settings.server << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Connection to " << info.first << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 	}
 
 	return success;
@@ -411,12 +440,14 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	httplib::Result res;
 
-	if (_settings.server.find("https") != std::string::npos) {
-		httplib::SSLClient cli(_settings.server);
+	auto info = get_server_domain_and_protocol(_settings.server);
+
+	if (info.second == Protocol::Https) {
+		httplib::SSLClient cli(info.first);
 		res = cli.Post("/upload", items);
 
 	} else {
-		httplib::Client cli(_settings.server);
+		httplib::Client cli(info.first);
 		res = cli.Post("/upload", items);
 	}
 
@@ -427,7 +458,8 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	}
 
 	else {
-		std::cout << "Failed to upload " << file_path << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Failed to upload " << file_path << " to " << info.first << " Status: " << (res ? std::to_string(
+					res->status) : "No response") << std::endl;
 		return false;
 	}
 }
