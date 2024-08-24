@@ -442,11 +442,11 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	if (info.second == Protocol::Https) {
 		httplib::SSLClient cli(info.first);
-		res = cli.Get("/");
+		res = cli.Post("/upload");
 
 	} else {
 		httplib::Client cli(info.first);
-		res = cli.Get("/");
+		res = cli.Post("/upload");
 	}
 
 	if (res && res->status == 302) {
