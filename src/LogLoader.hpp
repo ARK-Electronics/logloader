@@ -34,11 +34,19 @@ private:
 	bool download_log(const mavsdk::LogFiles::Entry& entry);
 	bool log_download_complete(const std::string& log_path);
 
+	enum class Protocol {
+		Http,
+		Https
+	};
+
 	// Upload
 	std::vector<std::string> get_logs_to_upload();
 	void upload_logs_thread();
-	bool send_log_to_server(const std::string& file_path);
+
+	std::pair<std::string, Protocol> get_server_domain_and_protocol(std::string url);
+
 	bool server_reachable();
+	bool send_log_to_server(const std::string& file_path);
 	bool log_has_been_uploaded(const std::string& file_path);
 	void mark_log_as_uploaded(const std::string& file_path);
 	std::string filepath_from_entry(const mavsdk::LogFiles::Entry entry);

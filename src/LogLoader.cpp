@@ -356,11 +356,38 @@ std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 	return ss.str();
 }
 
+std::pair<std::string, LogLoader::Protocol> LogLoader::get_server_domain_and_protocol(std::string url)
+{
+	std::pair<std::string, Protocol> result;
+
+	std::string http_prefix = "http://";
+	std::string https_prefix = "https://";
+
+	size_t pos = std::string::npos;
+
+	if ((pos = url.find(https_prefix)) != std::string::npos) {
+		result.first = url.substr(pos + https_prefix.length());
+		result.second = Protocol::Https;
+
+	} else if ((pos = url.find(http_prefix)) != std::string::npos) {
+		result.first = url.substr(pos + http_prefix.length());
+		result.second = Protocol::Http;
+
+	} else {
+		result.first = url;
+		result.second = Protocol::Https;
+	}
+
+	return result;
+}
+
 bool LogLoader::server_reachable()
 {
+	auto info = get_server_domain_and_protocol(_settings.server);
+
 	httplib::Result res;
 
-	if (_settings.server.find("https") != std::string::npos) {
+	if (info.second == Protocol::Https) {
 		httplib::SSLClient cli(_settings.server);
 		res = cli.Get("/");
 
