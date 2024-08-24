@@ -456,7 +456,8 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 	}
 
 	else {
-		std::cout << "Failed to upload " << file_path << ". Status: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Failed to upload " << file_path << " to " << info.first << " Status: " << (res ? std::to_string(
+					res->status) : "No response") << std::endl;
 		return false;
 	}
 }
