@@ -292,10 +292,13 @@ void LogLoader::upload_logs_thread()
 					std::cout << "Sending log to server failed" << std::endl;
 				}
 
+			} else {
+				std::cout << "Server unreachable" << std::endl;
+				break;
 			}
 		}
 
-		std::this_thread::sleep_for(std::chrono::seconds(1));
+		std::this_thread::sleep_for(std::chrono::seconds(5));
 	}
 }
 
