@@ -388,18 +388,18 @@ bool LogLoader::server_reachable()
 	httplib::Result res;
 
 	if (info.second == Protocol::Https) {
-		httplib::SSLClient cli(_settings.server);
+		httplib::SSLClient cli(info.first);
 		res = cli.Get("/");
 
 	} else {
-		httplib::Client cli(_settings.server);
+		httplib::Client cli(info.first);
 		res = cli.Get("/");
 	}
 
 	bool success = res && res->status == 200;
 
 	if (!success) {
-		std::cout << "Connection to " << _settings.server << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Connection to " << info.first << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 	}
 
 	return success;
@@ -438,13 +438,15 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	httplib::Result res;
 
-	if (_settings.server.find("https") != std::string::npos) {
-		httplib::SSLClient cli(_settings.server);
-		res = cli.Post("/upload", items);
+	auto info = get_server_domain_and_protocol(_settings.server);
+
+	if (info.second == Protocol::Https) {
+		httplib::SSLClient cli(info.first);
+		res = cli.Get("/");
 
 	} else {
-		httplib::Client cli(_settings.server);
-		res = cli.Post("/upload", items);
+		httplib::Client cli(info.first);
+		res = cli.Get("/");
 	}
 
 	if (res && res->status == 302) {
