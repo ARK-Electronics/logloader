@@ -28,30 +28,30 @@ CONFIG_FILE="$XDG_DATA_HOME/logloader/config.toml"
 
 if [ -n "$UPLOAD_SERVER" ]; then
 	echo "Setting server to: $UPLOAD_SERVER"
-	sed -i "s/^server = \".*\"/server = \"$UPLOAD_SERVER\"/" "$CONFIG_FILE"
+	sed -i "s|^server = \".*\"|server = \"$UPLOAD_SERVER\"|" "$CONFIG_FILE"
 fi
 
 if [ -n "$USER_EMAIL" ]; then
 	echo "Setting email to: $USER_EMAIL"
-	sed -i "s/^email = \".*\"/email = \"$USER_EMAIL\"/" "$CONFIG_FILE"
+	sed -i "s|^email = \".*\"|email = \"$USER_EMAIL\"|" "$CONFIG_FILE"
 fi
 
 if [ -n "$UPLOAD_TO_FLIGHT_REVIEW" ]; then
 	if [ "$UPLOAD_TO_FLIGHT_REVIEW" = "y" ]; then
 		echo "Log upload enabled"
-		sed -i "s/^upload_enabled = .*/upload_enabled = true/" "$CONFIG_FILE"
+		sed -i "s|^upload_enabled = .*|upload_enabled = true|" "$CONFIG_FILE"
 	else
 		echo "Log upload disabled"
-		sed -i "s/^upload_enabled = .*/upload_enabled = false/" "$CONFIG_FILE"
+		sed -i "s|^upload_enabled = .*|upload_enabled = false|" "$CONFIG_FILE"
 	fi
 fi
 
 if [ -n "$PUBLIC_LOGS" ]; then
 	if [ "$PUBLIC_LOGS" = "y" ]; then
 		echo "Public logs enabled"
-		sed -i "s/^public_logs = .*/public_logs = true/" "$CONFIG_FILE"
+		sed -i "s|^public_logs = .*|public_logs = true|" "$CONFIG_FILE"
 	else
 		echo "Public logs disabled"
-		sed -i "s/^public_logs = .*/public_logs = false/" "$CONFIG_FILE"
+		sed -i "s|^public_logs = .*|public_logs = false|" "$CONFIG_FILE"
 	fi
 fi
