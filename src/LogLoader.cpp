@@ -378,8 +378,6 @@ std::pair<std::string, LogLoader::Protocol> LogLoader::get_server_domain_and_pro
 		result.second = Protocol::Https;
 	}
 
-	std::cout << result.first << " using " << int(result.second) << std::endl;
-
 	return result;
 }
 
