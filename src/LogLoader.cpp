@@ -95,12 +95,12 @@ void LogLoader::run()
 		std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
 
 		// Pretty print them
-		int indexWidth = std::to_string(_log_entries.size() - 1).length();
+		// int indexWidth = std::to_string(_log_entries.size() - 1).length();
 
-		for (const auto& e : _log_entries) {
-			std::cout << std::setw(indexWidth) << std::right << e.id << "\t"  // Right-align the index
-				  << e.date << "\t" << std::fixed << std::setprecision(2) << e.size_bytes / 1e6 << "MB" << std::endl;
-		}
+		// for (const auto& e : _log_entries) {
+		// 	std::cout << std::setw(indexWidth) << std::right << e.id << "\t"  // Right-align the index
+		// 		  << e.date << "\t" << std::fixed << std::setprecision(2) << e.size_bytes / 1e6 << "MB" << std::endl;
+		// }
 
 		// If we have no logs, just download the latest
 		auto most_recent_log = find_most_recent_log();
