@@ -92,7 +92,7 @@ void LogLoader::run()
 			continue;
 		}
 
-		std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
+		// std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
 
 		// Pretty print them
 		// int indexWidth = std::to_string(_log_entries.size() - 1).length();
@@ -116,7 +116,6 @@ void LogLoader::run()
 		// Periodically request log list
 		if (!_should_exit) {
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-			std::cout << "Sleeping..." << std::endl;
 			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
 		}
 	}
@@ -126,7 +125,7 @@ void LogLoader::run()
 
 bool LogLoader::request_log_entries()
 {
-	std::cout << "Requesting log list..." << std::endl;
+	// std::cout << "Requesting log list..." << std::endl;
 	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
