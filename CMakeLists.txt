@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.9 LANGUAGES CXX)
 
-add_compile_options(-Wall -Wextra -Wpedantic -Wunused)
+add_compile_options(-Wall -Wextra -Werror -Wpedantic -Wunused)
 
 find_package(OpenSSL 3.0.2 REQUIRED)
 

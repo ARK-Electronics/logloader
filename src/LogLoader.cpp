@@ -245,10 +245,6 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 
 void LogLoader::upload_logs_thread()
 {
-	if (!_settings.upload_enabled) {
-		return;
-	}
-
 	// Short startup delay to allow the download thread to start re-downloading a
 	// potentially imcomplete log if the download was interrupted last time. We
 	// need to wait so that we don't race to check the _current_download.second
@@ -262,53 +258,112 @@ void LogLoader::upload_logs_thread()
 			continue;
 		}
 
-		// Get list of logs to upload
-		auto logs_to_upload = get_logs_to_upload();
+		if (!_settings.remote_server.empty() && _settings.upload_enabled) {
+			upload_logs_remote();
+		}
 
-		for (const auto& log_path : logs_to_upload) {
-
-			if (_should_exit) {
-				return;
-			}
-
-			if (_loop_disabled) {
-				break;
-			}
-
-			if (fs::file_size(log_path) == 0) {
-				// TODO: investigate root cause
-				// Skip and delete erroneous logs of size zero
-				std::cout << "Deleting erroneous zero length log file" << std::endl;
-				fs::remove(log_path);
-				continue;
-			}
-
-			// Upload the log
-			if (server_reachable()) {
-				if (send_log_to_server(log_path)) {
-					mark_log_as_uploaded(log_path);
-
-				} else {
-					std::cout << "Sending log to server failed" << std::endl;
-				}
-
-			} else {
-				std::cout << "Server unreachable" << std::endl;
-				break;
-			}
+		// Always upload to the local server
+		if (!_settings.local_server.empty()) {
+			upload_logs_local();
 		}
 
 		std::this_thread::sleep_for(std::chrono::seconds(5));
 	}
 }
 
-std::vector<std::string> LogLoader::get_logs_to_upload()
+void LogLoader::upload_logs_remote()
+{
+	bool local = false;
+	auto logs_to_upload = get_logs_to_upload(local);
+
+	for (const auto& log_path : logs_to_upload) {
+
+		if (_should_exit) {
+			return;
+		}
+
+		if (_loop_disabled) {
+			return;
+		}
+
+		if (fs::file_size(log_path) == 0) {
+			// TODO: investigate root cause
+			// Skip and delete erroneous logs of size zero
+			std::cout << "Deleting erroneous zero length log file" << std::endl;
+			fs::remove(log_path);
+			continue;
+		}
+
+		auto server = get_server_domain_and_protocol(_settings.remote_server);
+
+		if (!upload_log(log_path, server)) {
+			std::cout << "Upload failed" << std::endl;
+			return;
+		}
+
+		std::cout << "Remote server upload success" << std::endl;
+		mark_log_as_uploaded(log_path, local);
+	}
+}
+void LogLoader::upload_logs_local()
+{
+	bool local = true;
+	auto logs_to_upload = get_logs_to_upload(local);
+
+	for (const auto& log_path : logs_to_upload) {
+
+		if (_should_exit) {
+			return;
+		}
+
+		if (_loop_disabled) {
+			return;
+		}
+
+		if (fs::file_size(log_path) == 0) {
+			// TODO: investigate root cause
+			// Skip and delete erroneous logs of size zero
+			std::cout << "Deleting erroneous zero length log file" << std::endl;
+			fs::remove(log_path);
+			continue;
+		}
+
+		if (!_settings.remote_server.empty()) {
+			auto server = get_server_domain_and_protocol(_settings.local_server);
+
+			if (!upload_log(log_path, server)) {
+				std::cout << "Upload failed" << std::endl;
+				return;
+			}
+
+			std::cout << "Local server upload success" << std::endl;
+			mark_log_as_uploaded(log_path, local);
+		}
+	}
+}
+
+bool LogLoader::upload_log(const std::string& log_path, const ServerInfo& server)
+{
+	if (!server_reachable(server)) {
+		std::cout << "Server unreachable" << std::endl;
+		return false;
+	}
+
+	if (!send_log_to_server(log_path, server)) {
+		std::cout << "Sending log to server failed" << std::endl;
+		return false;
+	}
+
+	return true;
+}
+
+std::vector<std::string> LogLoader::get_logs_to_upload(bool local)
 {
 	std::vector<std::string> logs;
 
 	for (const auto& it : fs::directory_iterator(_settings.logging_directory)) {
 		std::string filename = it.path().filename().string();
-		bool should_upload = !log_has_been_uploaded(filename) && log_download_complete(filename);
+		bool should_upload = !log_has_been_uploaded(filename, local) && log_download_complete(filename);
 
 		if (should_upload) {
 			logs.push_back(it.path());
@@ -316,20 +371,6 @@ std::vector<std::string> LogLoader::get_logs_to_upload()
 	}
 
 	return logs;
-}
-
-bool LogLoader::log_has_been_uploaded(const std::string& filename)
-{
-	std::ifstream file(_settings.uploaded_logs_file);
-	std::string line;
-
-	while (std::getline(file, line)) {
-		if (line == filename) {
-			return true;
-		}
-	}
-
-	return false;
 }
 
 bool LogLoader::log_download_complete(const std::string& filename)
@@ -343,9 +384,25 @@ bool LogLoader::log_download_complete(const std::string& filename)
 	return true;
 }
 
-void LogLoader::mark_log_as_uploaded(const std::string& file_path)
+bool LogLoader::log_has_been_uploaded(const std::string& filename, bool local)
 {
-	std::ofstream file(_settings.uploaded_logs_file, std::ios::app);
+	std::string upload_file = local ? _settings.local_uploaded_logs_file : _settings.uploaded_logs_file;
+	std::ifstream file(upload_file);
+	std::string line;
+
+	while (std::getline(file, line)) {
+		if (line == filename) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void LogLoader::mark_log_as_uploaded(const std::string& file_path, bool local)
+{
+	std::string upload_file = local ? _settings.local_uploaded_logs_file : _settings.uploaded_logs_file;
+	std::ofstream file(upload_file, std::ios::app);
 	file << std::filesystem::path(file_path).filename().string() << std::endl;
 }
 
@@ -356,9 +413,9 @@ std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 	return ss.str();
 }
 
-std::pair<std::string, LogLoader::Protocol> LogLoader::get_server_domain_and_protocol(std::string url)
+LogLoader::ServerInfo LogLoader::get_server_domain_and_protocol(std::string url)
 {
-	std::pair<std::string, Protocol> result;
+	ServerInfo result;
 
 	std::string http_prefix = "http://";
 	std::string https_prefix = "https://";
@@ -366,46 +423,44 @@ std::pair<std::string, LogLoader::Protocol> LogLoader::get_server_domain_and_pro
 	size_t pos = std::string::npos;
 
 	if ((pos = url.find(https_prefix)) != std::string::npos) {
-		result.first = url.substr(pos + https_prefix.length());
-		result.second = Protocol::Https;
+		result.url = url.substr(pos + https_prefix.length());
+		result.protocol = Protocol::Https;
 
 	} else if ((pos = url.find(http_prefix)) != std::string::npos) {
-		result.first = url.substr(pos + http_prefix.length());
-		result.second = Protocol::Http;
+		result.url = url.substr(pos + http_prefix.length());
+		result.protocol = Protocol::Http;
 
 	} else {
-		result.first = url;
-		result.second = Protocol::Https;
+		result.url = url;
+		result.protocol = Protocol::Https;
 	}
 
 	return result;
 }
 
-bool LogLoader::server_reachable()
+bool LogLoader::server_reachable(const ServerInfo& server)
 {
-	auto info = get_server_domain_and_protocol(_settings.server);
-
 	httplib::Result res;
 
-	if (info.second == Protocol::Https) {
-		httplib::SSLClient cli(info.first);
+	if (server.protocol == Protocol::Https) {
+		httplib::SSLClient cli(server.url);
 		res = cli.Get("/");
 
 	} else {
-		httplib::Client cli(info.first);
+		httplib::Client cli(server.url);
 		res = cli.Get("/");
 	}
 
 	bool success = res && res->status == 200;
 
 	if (!success) {
-		std::cout << "Connection to " << info.first << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
+		std::cout << "Connection to " << server.url << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
 	}
 
 	return success;
 }
 
-bool LogLoader::send_log_to_server(const std::string& file_path)
+bool LogLoader::send_log_to_server(const std::string& file_path, const ServerInfo& server)
 {
 	std::ifstream file(file_path, std::ios::binary);
 
@@ -438,25 +493,23 @@ bool LogLoader::send_log_to_server(const std::string& file_path)
 
 	httplib::Result res;
 
-	auto info = get_server_domain_and_protocol(_settings.server);
-
-	if (info.second == Protocol::Https) {
-		httplib::SSLClient cli(info.first);
+	if (server.protocol == Protocol::Https) {
+		httplib::SSLClient cli(server.url);
 		res = cli.Post("/upload", items);
 
 	} else {
-		httplib::Client cli(info.first);
+		httplib::Client cli(server.url);
 		res = cli.Post("/upload", items);
 	}
 
 	if (res && res->status == 302) {
-		std::string url = _settings.server + res->get_header_value("Location");
+		std::string url = server.url + res->get_header_value("Location");
 		std::cout << std::endl << "Upload success:" << std::endl << url << std::endl;
 		return true;
 	}
 
 	else {
-		std::cout << "Failed to upload " << file_path << " to " << info.first << " Status: " << (res ? std::to_string(
+		std::cout << "Failed to upload " << file_path << " to " << server.url << " Status: " << (res ? std::to_string(
 					res->status) : "No response") << std::endl;
 		return false;
 	}

@@ -33,17 +33,17 @@ int main()
 
 	std::string logs_dir = std::string(getenv("HOME")) + "/.local/share/logloader/logs/";
 	std::string uploaded_logs_file = std::string(getenv("HOME")) + "/.local/share/logloader/uploaded_logs.txt";
-
-	std::cout << "logs_dir: " << logs_dir << std::endl;
-	std::cout << "uploaded_logs_file: " << uploaded_logs_file << std::endl;
+	std::string local_uploaded_logs_file = std::string(getenv("HOME")) + "/.local/share/logloader/local_uploaded_logs.txt";
 
 	// Setup the LogLoader
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
-		.server = config["server"].value_or("logs.px4.io"),
+		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
+		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
 		.logging_directory = logs_dir,
 		.uploaded_logs_file = uploaded_logs_file,
+		.local_uploaded_logs_file = local_uploaded_logs_file,
 		.upload_enabled = config["upload_enabled"].value_or(false),
 		.public_logs = config["public_logs"].value_or(false)
 	};
