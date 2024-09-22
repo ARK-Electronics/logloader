@@ -12,10 +12,12 @@ class LogLoader
 public:
 	struct Settings {
 		std::string email;
-		std::string server;
+		std::string local_server;
+		std::string remote_server;
 		std::string mavsdk_connection_url;
 		std::string logging_directory;
 		std::string uploaded_logs_file;
+		std::string local_uploaded_logs_file;
 		bool upload_enabled;
 		bool public_logs;
 	};
@@ -34,21 +36,30 @@ private:
 	bool download_log(const mavsdk::LogFiles::Entry& entry);
 	bool log_download_complete(const std::string& log_path);
 
+	// Upload
 	enum class Protocol {
 		Http,
 		Https
 	};
 
-	// Upload
-	std::vector<std::string> get_logs_to_upload();
+	struct ServerInfo {
+		Protocol protocol {};
+		std::string url {};
+	};
+
+	void upload_logs_local();
+	void upload_logs_remote();
+
 	void upload_logs_thread();
+	std::vector<std::string> get_logs_to_upload(bool local);
+	bool upload_log(const std::string& log_path, const ServerInfo& server);
 
-	std::pair<std::string, Protocol> get_server_domain_and_protocol(std::string url);
+	ServerInfo get_server_domain_and_protocol(std::string url);
 
-	bool server_reachable();
-	bool send_log_to_server(const std::string& file_path);
-	bool log_has_been_uploaded(const std::string& file_path);
-	void mark_log_as_uploaded(const std::string& file_path);
+	bool server_reachable(const ServerInfo& server);
+	bool send_log_to_server(const std::string& file_path, const ServerInfo& server);
+	bool log_has_been_uploaded(const std::string& file_path, bool local);
+	void mark_log_as_uploaded(const std::string& file_path, bool local);
 	std::string filepath_from_entry(const mavsdk::LogFiles::Entry entry);
 
 	mavsdk::LogFiles::Entry find_most_recent_log();

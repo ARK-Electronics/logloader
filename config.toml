@@ -1,5 +1,6 @@
-email = ""
-server = "review.px4.io"
 connection_url = "udp://:14551"
+local_server = "http://127.0.0.1:5006"
+remote_server = "https://review.px4.io"
+email = ""
 upload_enabled = false
 public_logs = false
