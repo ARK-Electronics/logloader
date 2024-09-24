@@ -22,6 +22,7 @@ include_directories(third_party/tomlplusplus/)
 
 add_executable(${PROJECT_NAME}
     src/main.cpp
+    src/ServerUploadManager.cpp
     src/LogLoader.cpp)
 
 target_link_libraries(${PROJECT_NAME}

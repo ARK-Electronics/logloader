@@ -1,11 +1,9 @@
 #include "LogLoader.hpp"
-#include <iomanip>
 #include <iostream>
 #include <filesystem>
 #include <future>
 #include <regex>
-#define CPPHTTPLIB_OPENSSL_SUPPORT
-#include <httplib.h>
+#include <fstream>
 
 namespace fs = std::filesystem;
 
@@ -18,14 +16,32 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	//  return true;
 	// });
 
+	_logs_directory = _settings.application_directory + "logs/";
+
+	ServerUploadManager::Settings local_server_settings = {
+		.server_url = settings.local_server,
+		.user_email = "",
+		.logs_directory = _logs_directory,
+		.uploaded_logs_file = "local_uploaded_logs.txt",
+		.upload_enabled = true, // Always upload to local server
+		.public_logs = true, // Public required true for searching using Web UI
+	};
+
+	ServerUploadManager::Settings remote_server_settings = {
+		.server_url = settings.remote_server,
+		.user_email = settings.email,
+		.logs_directory = _logs_directory,
+		.uploaded_logs_file = "uploaded_logs.txt",
+		.upload_enabled = settings.upload_enabled,
+		.public_logs = settings.public_logs,
+	};
+
+	_local_server = std::make_shared<ServerUploadManager>(local_server_settings);
+	_remote_server = std::make_shared<ServerUploadManager>(remote_server_settings);
+
 	std::cout << std::fixed << std::setprecision(8);
 
-	// Ensure proper directory syntax
-	if (_settings.logging_directory.back() != '/') {
-		_settings.logging_directory += '/';
-	}
-
-	fs::create_directories(_settings.logging_directory);
+	fs::create_directories(_logs_directory);
 }
 
 void LogLoader::stop()
@@ -77,11 +93,15 @@ void LogLoader::run()
 
 		if (logger_running || vehicle_armed) {
 			_loop_disabled = true;
+			_remote_server->stop();
+			_local_server->stop();
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 
 		} else if (_loop_disabled) {
 			_loop_disabled = false;
+			_remote_server->start();
+			_local_server->start();
 			// Stall for a few seconds to allow logger to finish writing
 			std::this_thread::sleep_for(std::chrono::seconds(3));
 		}
@@ -92,11 +112,9 @@ void LogLoader::run()
 			continue;
 		}
 
+		// Pretty print the log names
 		// std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
-
-		// Pretty print them
 		// int indexWidth = std::to_string(_log_entries.size() - 1).length();
-
 		// for (const auto& e : _log_entries) {
 		// 	std::cout << std::setw(indexWidth) << std::right << e.id << "\t"  // Right-align the index
 		// 		  << e.date << "\t" << std::fixed << std::setprecision(2) << e.size_bytes / 1e6 << "MB" << std::endl;
@@ -125,7 +143,6 @@ void LogLoader::run()
 
 bool LogLoader::request_log_entries()
 {
-	// std::cout << "Requesting log list..." << std::endl;
 	auto entries_result = _log_files->get_entries();
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
@@ -183,11 +200,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 	std::cout << "Downloading  " << download_path << std::endl;
 
 	// Mark the file as currently being downloaded
-	{
-		std::lock_guard<std::mutex> lock(_current_download_mutex);
-		_current_download.second = false;
-		_current_download.first = std::filesystem::path(download_path).filename().string();
-	}
+	std::ofstream lock_file(download_path + ".lock");
+	lock_file.close();
 
 	auto time_start = std::chrono::steady_clock::now();
 
@@ -231,13 +245,12 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 
 	bool success = result == mavsdk::LogFiles::Result::Success;
 
-	if (success) {
-		std::lock_guard<std::mutex> lock(_current_download_mutex);
-		_current_download.second = true;
-
-	} else {
+	if (!success) {
 		std::cout << "Download failed" << std::endl;
 	}
+
+	// Remove lock_file indicating download is complete
+	std::filesystem::remove(download_path + ".lock");
 
 	return success;
 }
@@ -257,261 +270,23 @@ void LogLoader::upload_logs_thread()
 			continue;
 		}
 
-		if (!_settings.remote_server.empty() && _settings.upload_enabled) {
-			upload_logs_remote();
+		if (!_settings.remote_server.empty()) {
+			_remote_server->upload_logs();
 		}
 
-		// Always upload to the local server
 		if (!_settings.local_server.empty()) {
-			upload_logs_local();
+			_local_server->upload_logs();
 		}
 
 		std::this_thread::sleep_for(std::chrono::seconds(5));
 	}
 }
 
-void LogLoader::upload_logs_remote()
-{
-	bool local = false;
-	auto logs_to_upload = get_logs_to_upload(local);
-
-	for (const auto& log_path : logs_to_upload) {
-
-		if (_should_exit) {
-			return;
-		}
-
-		if (_loop_disabled) {
-			return;
-		}
-
-		if (fs::file_size(log_path) == 0) {
-			// TODO: investigate root cause
-			// Skip and delete erroneous logs of size zero
-			std::cout << "Deleting erroneous zero length log file" << std::endl;
-			fs::remove(log_path);
-			continue;
-		}
-
-		auto server = get_server_domain_and_protocol(_settings.remote_server);
-
-		if (!upload_log(log_path, server)) {
-			std::cout << "Upload failed" << std::endl;
-			return;
-		}
-
-		std::cout << "Remote server upload success" << std::endl;
-		mark_log_as_uploaded(log_path, local);
-	}
-}
-void LogLoader::upload_logs_local()
-{
-	bool local = true;
-	auto logs_to_upload = get_logs_to_upload(local);
-
-	for (const auto& log_path : logs_to_upload) {
-
-		if (_should_exit) {
-			return;
-		}
-
-		if (_loop_disabled) {
-			return;
-		}
-
-		if (fs::file_size(log_path) == 0) {
-			// TODO: investigate root cause
-			// Skip and delete erroneous logs of size zero
-			std::cout << "Deleting erroneous zero length log file" << std::endl;
-			fs::remove(log_path);
-			continue;
-		}
-
-		if (!_settings.remote_server.empty()) {
-			auto server = get_server_domain_and_protocol(_settings.local_server);
-
-			if (!upload_log(log_path, server)) {
-				std::cout << "Upload failed" << std::endl;
-				return;
-			}
-
-			std::cout << "Local server upload success" << std::endl;
-			mark_log_as_uploaded(log_path, local);
-		}
-	}
-}
-
-bool LogLoader::upload_log(const std::string& log_path, const ServerInfo& server)
-{
-	if (!server_reachable(server)) {
-		std::cout << "Server unreachable" << std::endl;
-		return false;
-	}
-
-	if (!send_log_to_server(log_path, server)) {
-		std::cout << "Sending log to server failed" << std::endl;
-		return false;
-	}
-
-	return true;
-}
-
-std::vector<std::string> LogLoader::get_logs_to_upload(bool local)
-{
-	std::vector<std::string> logs;
-
-	for (const auto& it : fs::directory_iterator(_settings.logging_directory)) {
-		std::string filename = it.path().filename().string();
-		bool should_upload = !log_has_been_uploaded(filename, local) && log_download_complete(filename);
-
-		if (should_upload) {
-			logs.push_back(it.path());
-		}
-	}
-
-	return logs;
-}
-
-bool LogLoader::log_download_complete(const std::string& filename)
-{
-	std::lock_guard<std::mutex> lock(_current_download_mutex);
-
-	if (_current_download.first == filename) {
-		return _current_download.second;
-	}
-
-	return true;
-}
-
-bool LogLoader::log_has_been_uploaded(const std::string& filename, bool local)
-{
-	std::string upload_file = local ? _settings.local_uploaded_logs_file : _settings.uploaded_logs_file;
-	std::ifstream file(upload_file);
-	std::string line;
-
-	while (std::getline(file, line)) {
-		if (line == filename) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-void LogLoader::mark_log_as_uploaded(const std::string& file_path, bool local)
-{
-	std::string upload_file = local ? _settings.local_uploaded_logs_file : _settings.uploaded_logs_file;
-	std::ofstream file(upload_file, std::ios::app);
-	file << std::filesystem::path(file_path).filename().string() << std::endl;
-}
-
 std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 {
 	std::ostringstream ss;
-	ss << _settings.logging_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
+	ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
 	return ss.str();
-}
-
-LogLoader::ServerInfo LogLoader::get_server_domain_and_protocol(std::string url)
-{
-	ServerInfo result;
-
-	std::string http_prefix = "http://";
-	std::string https_prefix = "https://";
-
-	size_t pos = std::string::npos;
-
-	if ((pos = url.find(https_prefix)) != std::string::npos) {
-		result.url = url.substr(pos + https_prefix.length());
-		result.protocol = Protocol::Https;
-
-	} else if ((pos = url.find(http_prefix)) != std::string::npos) {
-		result.url = url.substr(pos + http_prefix.length());
-		result.protocol = Protocol::Http;
-
-	} else {
-		result.url = url;
-		result.protocol = Protocol::Https;
-	}
-
-	return result;
-}
-
-bool LogLoader::server_reachable(const ServerInfo& server)
-{
-	httplib::Result res;
-
-	if (server.protocol == Protocol::Https) {
-		httplib::SSLClient cli(server.url);
-		res = cli.Get("/");
-
-	} else {
-		httplib::Client cli(server.url);
-		res = cli.Get("/");
-	}
-
-	bool success = res && res->status == 200;
-
-	if (!success) {
-		std::cout << "Connection to " << server.url << " failed: " << (res ? std::to_string(res->status) : "No response") << std::endl;
-	}
-
-	return success;
-}
-
-bool LogLoader::send_log_to_server(const std::string& file_path, const ServerInfo& server)
-{
-	std::ifstream file(file_path, std::ios::binary);
-
-	if (!file) {
-		std::cout << "Could not open file " << file_path << std::endl;
-		return false;
-	}
-
-	// Build multi-part form data
-	httplib::MultipartFormDataItems items = {
-		{"type", _settings.public_logs ? "flightreport" : "personal", "", ""}, // NOTE: backend logic is funky
-		{"description", "Uploaded by logloader", "", ""},
-		{"feedback", "", "", ""},
-		{"email", _settings.email, "", ""},
-		{"source", "auto", "", ""},
-		{"videoUrl", "", "", ""},
-		{"rating", "", "", ""},
-		{"windSpeed", "", "", ""},
-		{"public", _settings.public_logs ? "true" : "false", "", ""},
-	};
-
-	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-	items.push_back({"filearg", content, file_path, "application/octet-stream"});
-
-	// Post multi-part form
-	std::cout << "Uploading:  "
-		  << std::setw(24) << std::left << fs::path(file_path).filename().string()
-		  << std::setw(8) << std::fixed << std::setprecision(2) << fs::file_size(file_path) / 1e6 << "MB"
-		  << std::flush << std::endl;
-
-	httplib::Result res;
-
-	if (server.protocol == Protocol::Https) {
-		httplib::SSLClient cli(server.url);
-		res = cli.Post("/upload", items);
-
-	} else {
-		httplib::Client cli(server.url);
-		res = cli.Post("/upload", items);
-	}
-
-	if (res && res->status == 302) {
-		std::string url = server.url + res->get_header_value("Location");
-		std::cout << std::endl << "Upload success:" << std::endl << url << std::endl;
-		return true;
-	}
-
-	else {
-		std::cout << "Failed to upload " << file_path << " to " << server.url << " Status: " << (res ? std::to_string(
-					res->status) : "No response") << std::endl;
-		return false;
-	}
 }
 
 mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
@@ -522,7 +297,7 @@ mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
 	int max_index = -1; // Start with -1 to ensure any found index will be greater
 	std::string latest_datetime; // To keep track of the latest datetime for the highest index
 
-	for (const auto& dir_iter : fs::directory_iterator(_settings.logging_directory)) {
+	for (const auto& dir_iter : fs::directory_iterator(_logs_directory)) {
 		std::string filename = dir_iter.path().filename().string();
 
 		std::smatch matches;
