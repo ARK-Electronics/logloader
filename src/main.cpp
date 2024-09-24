@@ -34,7 +34,7 @@ int main()
 		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
 		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.application_directory = std::string(getenv("HOME")) + "/.local/share/logloader",
+		.application_directory = std::string(getenv("HOME")) + "/.local/share/logloader/",
 		.upload_enabled = config["upload_enabled"].value_or(false),
 		.public_logs = config["public_logs"].value_or(false)
 	};
