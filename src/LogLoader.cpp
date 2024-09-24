@@ -22,7 +22,7 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 		.server_url = settings.local_server,
 		.user_email = "",
 		.logs_directory = _logs_directory,
-		.uploaded_logs_file = "local_uploaded_logs.txt",
+		.uploaded_logs_file = _settings.application_directory + "local_uploaded_logs.txt",
 		.upload_enabled = true, // Always upload to local server
 		.public_logs = true, // Public required true for searching using Web UI
 	};
@@ -31,7 +31,7 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 		.server_url = settings.remote_server,
 		.user_email = settings.email,
 		.logs_directory = _logs_directory,
-		.uploaded_logs_file = "uploaded_logs.txt",
+		.uploaded_logs_file = _settings.application_directory + "uploaded_logs.txt",
 		.upload_enabled = settings.upload_enabled,
 		.public_logs = settings.public_logs,
 	};
