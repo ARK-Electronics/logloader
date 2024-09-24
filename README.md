@@ -62,18 +62,17 @@ Downloading...	2023-10-07T12:14:46Z	2.24213400MB	100%	2989.51200000 Kbps
 Downloading...	2023-10-07T12:50:12Z	0.78112200MB	100%	3124.48800000 Kbps
 ```
 
-## TODO
-- logs will live at ~/.local/share/logloader/logs/
-- uploaded logs tracking will live at ~/.local/share/logloader/uploaded_logs.txt
-- config file will live at ~/.local/share/logloader/config.toml
-
 ### Install
 Build and install
 ```
 make install
 ```
-
-Installs the binary to **/usr/local/bin** and creates the application folder at **/.local/share/logloader/**. To change the program settings modify the file **/.local/share/logloader/config.toml**.
+| | |
+|---------------------|-----------------------------------------|
+| **Binary path**      | `/usr/local/bin`                       |
+| **Application directory** | `~/.local/share/logloader/`       |
+| **Logs directory**   | `~/.local/share/logloader/logs/`       |
+| **Config File**      | `~/.local/share/logloader/config.toml` |
 
 ### Performance
 Monitor network traffic
