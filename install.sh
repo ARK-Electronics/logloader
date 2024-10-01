@@ -26,11 +26,6 @@ cp $THIS_DIR/config.toml $XDG_DATA_HOME/logloader/
 # Modify config file if ENV variables are set
 CONFIG_FILE="$XDG_DATA_HOME/logloader/config.toml"
 
-if [ -n "$UPLOAD_SERVER" ]; then
-	echo "Setting server to: $UPLOAD_SERVER"
-	sed -i "s|^server = \".*\"|server = \"$UPLOAD_SERVER\"|" "$CONFIG_FILE"
-fi
-
 if [ -n "$USER_EMAIL" ]; then
 	echo "Setting email to: $USER_EMAIL"
 	sed -i "s|^email = \".*\"|email = \"$USER_EMAIL\"|" "$CONFIG_FILE"
