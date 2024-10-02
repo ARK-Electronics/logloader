@@ -19,7 +19,7 @@ fi
 make
 
 # Setup project directory
-sudo cp $THIS_DIR/build/logloader /usr/local/bin
+sudo cp $THIS_DIR/build/logloader ~/.local/bin
 mkdir -p $XDG_DATA_HOME/logloader/logs
 cp $THIS_DIR/config.toml $XDG_DATA_HOME/logloader/
 

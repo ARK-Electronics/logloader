@@ -69,7 +69,7 @@ make install
 ```
 | | |
 |---------------------|-----------------------------------------|
-| **Binary path**      | `/usr/local/bin`                       |
+| **Binary path**      | `~/.local/bin`                       |
 | **Application directory** | `~/.local/share/logloader/`       |
 | **Logs directory**   | `~/.local/share/logloader/logs/`       |
 | **Config File**      | `~/.local/share/logloader/config.toml` |
