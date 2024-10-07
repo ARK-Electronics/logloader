@@ -7,8 +7,6 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$DEFAULT_XDG_CONF_HOME}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-$DEFAULT_XDG_DATA_HOME}"
 THIS_DIR="$(dirname "$(realpath "$BASH_SOURCE")")"
 
-sudo true
-
 # Make sure pgk config can find openssl
 if ! pkg-config --exists openssl || [[ "$(pkg-config --modversion openssl)" < "3.0.2" ]]; then
 	echo "Installing OpenSSL from source"
@@ -16,7 +14,10 @@ if ! pkg-config --exists openssl || [[ "$(pkg-config --modversion openssl)" < "3
 fi
 
 # Build the project
+pushd .
+cd "$THIS_DIR"
 make
+popd
 
 # Setup project directory
 cp $THIS_DIR/build/logloader ~/.local/bin
