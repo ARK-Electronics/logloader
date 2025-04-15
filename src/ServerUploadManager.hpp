@@ -36,3 +36,8 @@ private:
 
 	bool is_uploaded(const std::string& file_path);
 	void set_uploaded(const std::string& file_path);
+
+	Settings _settings;
+	Protocol _protocol {Protocol::Https};
+	bool _should_exit = false;
+};

@@ -42,15 +42,12 @@ public:
 	std::vector<LogRecord> get_logs_to_upload_local(int limit = 1);
 	std::vector<LogRecord> get_logs_to_upload_remote(int limit = 1);
 
-	// Get log by UUID
 	LogRecord get_log_by_uuid(const std::string& uuid);
-
-	// Convert entry to database record
 	LogRecord entry_to_record(const mavsdk::LogFiles::Entry& entry);
 
 private:
-	sqlite3* _db;
 	std::string _db_path;
+	sqlite3* _db;
 
 	// Helper methods
 	bool execute_query(const std::string& query);
