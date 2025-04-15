@@ -1,7 +1,6 @@
-## PX4 Flight Log Management
-Downloads PX4 ulogs from the flight controller SD card and uploads to [PX4 Flight Review](https://review.px4.io/).
+![image](logloader_logo.png)
 
-[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/7GveNCRZMNM/0.jpg)](https://www.youtube.com/watch?v=7GveNCRZMNM)
+Downloads PX4 ulogs from the flight controller SD card and optionally uploads them to a one or more servers.
 
 The **config.toml** file is used to configure the program settings.
 
