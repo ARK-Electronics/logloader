@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
 
