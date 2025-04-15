@@ -55,36 +55,82 @@ void ServerUploadManager::stop()
 
 void ServerUploadManager::upload_logs()
 {
+	// This method is kept for compatibility but we now recommend
+	// using upload_log directly with specific paths
 	if (!_settings.upload_enabled || _should_exit) {
 		return;
 	}
 
-	for (const auto& log_path : upload_logs_list()) {
-
+	for (const auto& dir_entry : fs::directory_iterator(_settings.logs_directory)) {
 		if (_should_exit) {
 			return;
 		}
 
-		// TODO: investigate root cause, we can remove this logic eventually
-		if (fs::file_size(log_path) == 0) {
-			// Skip and delete erroneous logs of size zero
-			std::cout << "Deleting erroneous zero length log file" << std::endl;
-			fs::remove(log_path);
+		std::string file_path = dir_entry.path().string();
+		std::string filename = dir_entry.path().filename().string();
+
+		// Skip files that are in progress (have a .lock file)
+		if (fs::exists(file_path + ".lock")) {
 			continue;
 		}
 
-		if (!upload_log(log_path)) {
+		// Skip non-log files
+		if (filename.find(".ulg") == std::string::npos) {
+			continue;
+		}
+
+		// Skip files that have already been uploaded
+		if (is_uploaded(filename)) {
+			continue;
+		}
+
+		if (fs::file_size(file_path) == 0) {
+			// Skip and delete erroneous logs of size zero
+			std::cout << "Deleting erroneous zero length log file" << std::endl;
+			fs::remove(file_path);
+			continue;
+		}
+
+		if (!upload_log(file_path)) {
 			std::cout << "Upload failed" << std::endl;
 			return;
 		}
 
 		std::cout << "Server upload success: " << _settings.server_url << std::endl;
-		set_uploaded(log_path);
+		set_uploaded(file_path);
 	}
 }
 
 bool ServerUploadManager::upload_log(const std::string& log_path)
 {
+	if (!_settings.upload_enabled || _should_exit) {
+		return false;
+	}
+
+	// Skip files that are in progress (have a .lock file)
+	if (fs::exists(log_path + ".lock")) {
+		return false;
+	}
+
+	// Skip files that don't exist
+	if (!fs::exists(log_path)) {
+		std::cout << "Log file does not exist: " << log_path << std::endl;
+		return false;
+	}
+
+	// Skip files with size zero
+	if (fs::file_size(log_path) == 0) {
+		std::cout << "Skipping zero-size log file: " << log_path << std::endl;
+		return false;
+	}
+
+	// Skip files that have already been uploaded
+	std::string filename = fs::path(log_path).filename().string();
+
+	if (is_uploaded(filename)) {
+		return true;  // Already uploaded, consider it a success
+	}
+
 	if (!server_reachable()) {
 		std::cout << "Server unreachable" << std::endl;
 		return false;
@@ -95,6 +141,8 @@ bool ServerUploadManager::upload_log(const std::string& log_path)
 		return false;
 	}
 
+	std::cout << "Server upload success: " << _settings.server_url << std::endl;
+	set_uploaded(log_path);
 	return true;
 }
 
@@ -174,28 +222,6 @@ bool ServerUploadManager::send_to_server(const std::string& filepath)
 					res->status) : "No response") << std::endl;
 		return false;
 	}
-}
-
-std::vector<std::string> ServerUploadManager::upload_logs_list()
-{
-	std::vector<std::string> logs;
-
-	for (const auto& it : fs::directory_iterator(_settings.logs_directory)) {
-		std::string filepath = it.path().string();
-		std::string filename = it.path().filename().string();
-		bool should_upload = !is_uploaded(filename) && download_complete(filepath);
-
-		if (should_upload) {
-			logs.push_back(it.path());
-		}
-	}
-
-	return logs;
-}
-
-bool ServerUploadManager::download_complete(const std::string& filepath)
-{
-	return !fs::exists(filepath + ".lock");
 }
 
 void ServerUploadManager::set_uploaded(const std::string& filepath)

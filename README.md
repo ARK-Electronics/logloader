@@ -1,6 +1,6 @@
 ![image](logloader_logo.png)
 
-Downloads PX4 ulogs from the flight controller SD card and optionally uploads them to a one or more servers.
+Downloads PX4 log files (.ulg) and uploads them to the cloud.
 
 The **config.toml** file is used to configure the program settings.
 

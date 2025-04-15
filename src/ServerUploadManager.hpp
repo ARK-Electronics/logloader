@@ -18,16 +18,13 @@ public:
 	ServerUploadManager(const Settings& settings);
 
 	void upload_logs();
+	bool upload_log(const std::string& log_path);
 
 	void start();
 	void stop();
 
 private:
 	void sanitize_url_and_determine_protocol();
-
-	std::vector<std::string> upload_logs_list();
-
-	bool upload_log(const std::string& log_path);
 
 	enum class Protocol {
 		Http,
@@ -39,10 +36,3 @@ private:
 
 	bool is_uploaded(const std::string& file_path);
 	void set_uploaded(const std::string& file_path);
-
-	bool download_complete(const std::string& filepath);
-
-	Settings _settings;
-	Protocol _protocol {Protocol::Https};
-	bool _should_exit = false;
-};

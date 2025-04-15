@@ -18,6 +18,14 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 
 	_logs_directory = _settings.application_directory + "logs/";
 
+	// Initialize the database
+	std::string db_path = _settings.application_directory + "logs.db";
+	_log_db = std::make_shared<LogDatabase>(db_path);
+
+	if (!_log_db->init()) {
+		std::cerr << "Failed to initialize log database" << std::endl;
+	}
+
 	ServerUploadManager::Settings local_server_settings = {
 		.server_url = settings.local_server,
 		.user_email = "",
@@ -112,23 +120,10 @@ void LogLoader::run()
 			continue;
 		}
 
-		// Pretty print the log names
-		// std::cout << "Found " << _log_entries.size() << " logs" << std::endl;
-		// int indexWidth = std::to_string(_log_entries.size() - 1).length();
-		// for (const auto& e : _log_entries) {
-		// 	std::cout << std::setw(indexWidth) << std::right << e.id << "\t"  // Right-align the index
-		// 		  << e.date << "\t" << std::fixed << std::setprecision(2) << e.size_bytes / 1e6 << "MB" << std::endl;
-		// }
-
-		// If we have no logs, just download the latest
-		auto most_recent_log = find_most_recent_log();
-
-		if (most_recent_log.date.empty()) {
-			download_first_log();
-
-		} else {
-			// Otherwise download all logs more recent than the latest log we have locally
-			download_logs_greater_than(most_recent_log);
+		// Process one log at a time
+		while (process_next_log() && !_should_exit) {
+			// This will process one log at a time
+			// and check _should_exit after each download
 		}
 
 		// Periodically request log list
@@ -151,43 +146,48 @@ bool LogLoader::request_log_entries()
 
 	_log_entries = entries_result.second;
 
+	// Add all entries to the database
+	for (const auto& entry : _log_entries) {
+		_log_db->add_log(entry);
+	}
+
 	return true;
 }
 
-void LogLoader::download_first_log()
+bool LogLoader::process_next_log()
 {
-	std::cout << "No local logs found, downloading latest" << std::endl;
-	auto entry = _log_entries.back();
-	download_log(entry);
-}
+	// Get one undownloaded log from the database
+	auto logs_to_download = _log_db->get_logs_to_download(1, 0);
 
-void LogLoader::download_logs_greater_than(const mavsdk::LogFiles::Entry& most_recent)
-{
-	// Check which logs need to be downloaded
-	for (auto& entry : _log_entries) {
+	if (logs_to_download.empty()) {
+		// No more logs to download
+		return false;
+	}
 
-		if (_should_exit) {
-			return;
-		}
+	auto& log_record = logs_to_download[0];
 
-		bool new_log = entry.id > most_recent.id;
-		bool partial_log = (entry.id == most_recent.id) && (entry.size_bytes > most_recent.size_bytes);
+	// Find the corresponding log entry
+	for (const auto& entry : _log_entries) {
+		// Match by UUID (which is based on date and size)
+		std::string uuid = _log_db->generate_uuid(entry);
 
-		if (new_log || partial_log) {
-			if (partial_log) {
-				std::cout << "Incomplete log, re-downloading..." << std::endl;
-				std::cout << "size actual/downloaded: " << entry.size_bytes << "/" << most_recent.size_bytes << std::endl;
+		if (uuid == log_record.uuid) {
+			bool success = download_log(entry);
 
-				auto log_path = filepath_from_entry(entry);
-
-				if (fs::exists(log_path)) {
-					fs::remove(log_path);
-				}
+			if (success) {
+				_log_db->update_download_status(uuid, true);
 			}
 
-			download_log(entry);
+			return true;  // Successfully processed one log
 		}
 	}
+
+	// Couldn't find matching entry in _log_entries
+	// This could happen if the log is no longer available on the vehicle
+	// Mark it as processed to avoid trying again
+	_log_db->update_download_status(log_record.uuid, true);
+
+	return true;  // Continue processing more logs
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
@@ -264,18 +264,37 @@ void LogLoader::upload_logs_thread()
 	std::this_thread::sleep_for(std::chrono::seconds(5));
 
 	while (!_should_exit) {
-
 		if (_loop_disabled) {
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 		}
 
 		if (!_settings.remote_server.empty()) {
-			_remote_server->upload_logs();
+			// Process one log at a time for remote server
+			auto logs_to_upload = _log_db->get_logs_to_upload_remote(1);
+
+			if (!logs_to_upload.empty()) {
+				auto& log = logs_to_upload[0];
+				std::string log_path = filepath_from_uuid(log.uuid);
+
+				if (_remote_server->upload_log(log_path)) {
+					_log_db->update_upload_status(log.uuid, log.local_uploaded, true);
+				}
+			}
 		}
 
 		if (!_settings.local_server.empty()) {
-			_local_server->upload_logs();
+			// Process one log at a time for local server
+			auto logs_to_upload = _log_db->get_logs_to_upload_local(1);
+
+			if (!logs_to_upload.empty()) {
+				auto& log = logs_to_upload[0];
+				std::string log_path = filepath_from_uuid(log.uuid);
+
+				if (_local_server->upload_log(log_path)) {
+					_log_db->update_upload_status(log.uuid, true, log.remote_uploaded);
+				}
+			}
 		}
 
 		std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -289,34 +308,17 @@ std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
 	return ss.str();
 }
 
-mavsdk::LogFiles::Entry LogLoader::find_most_recent_log()
+std::string LogLoader::filepath_from_uuid(const std::string& uuid)
 {
-	mavsdk::LogFiles::Entry entry = {};
-	// Regex pattern to match "LOG<index>_<datetime>.ulg" format
-	std::regex log_pattern("LOG(\\d+)_(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\.ulg");
-	int max_index = -1; // Start with -1 to ensure any found index will be greater
-	std::string latest_datetime; // To keep track of the latest datetime for the highest index
+	// Look up the log entry by UUID
+	auto record = _log_db->get_log_by_uuid(uuid);
 
-	for (const auto& dir_iter : fs::directory_iterator(_logs_directory)) {
-		std::string filename = dir_iter.path().filename().string();
-
-		std::smatch matches;
-
-		if (std::regex_search(filename, matches, log_pattern) && matches.size() > 2) {
-			int index = std::stoi(matches[1].str()); // Index is in the first capture group
-			std::string datetime = matches[2].str(); // Datetime is in the second capture group
-
-			// Check if this log has a higher index or same index with a later timestamp
-			if (index > max_index || (index == max_index && datetime > latest_datetime)) {
-				max_index = index;
-				latest_datetime = datetime;
-				// construct log Entry
-				entry.id = index;
-				entry.date = datetime;
-				entry.size_bytes = dir_iter.file_size();
-			}
-		}
+	if (record.uuid.empty()) {
+		return "";
 	}
 
-	return entry;
+	// Construct the file path using the log record
+	std::ostringstream ss;
+	ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << record.id << "_" << record.date << ".ulg";
+	return ss.str();
 }
