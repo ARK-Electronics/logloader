@@ -297,9 +297,10 @@ void LogLoader::upload_logs_thread()
 		}
 
 		if (!_should_exit) {
+			LOG_DEBUG("upload thread sleeping");
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
-			LOG_DEBUG("done waiting");
+			_exit_cv.wait_for(lock, std::chrono::seconds(30), [this] { return _should_exit.load(); });
+			LOG_DEBUG("upload thread woke up");
 		}
 	}
 
