@@ -5,7 +5,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.9 LANGUAGES CXX)
 
-# Add debug build option
 option(DEBUG_BUILD "Enable debug logging" OFF)
 if(DEBUG_BUILD)
     add_definitions(-DDEBUG_BUILD)

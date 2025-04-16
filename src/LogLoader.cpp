@@ -90,6 +90,7 @@ void LogLoader::run()
 
 	while (!_should_exit) {
 		// Check if vehicle is armed or if the logger is running
+		// TODO: use SYS_STATUS flags to check logger status -- needs MAVSDK impl
 		// bool logger_running = _telemetry->sys_status_sensors().enabled & MAV_SYS_STATUS_LOGGING;
 		bool logger_running = false;
 		bool vehicle_armed = _telemetry->armed();
@@ -115,16 +116,14 @@ void LogLoader::run()
 			continue;
 		}
 
-		// Process one log at a time
 		while (!_should_exit && download_next_log()) {
-			// This will download one log at a time
-			// and check _should_exit after each download
+			// Download logs until we should exit or there are none left to download
 		}
 
 		// Periodically request log list
 		if (!_should_exit) {
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
+			_exit_cv.wait_for(lock, std::chrono::seconds(30), [this] { return _should_exit.load(); });
 		}
 	}
 
@@ -136,7 +135,7 @@ bool LogLoader::request_log_entries()
 {
 	LOG_DEBUG("Requesting log entries...");
 
-	// Time the MAVSDK get_entries call
+	// Debug profiling code. We need to check how this performs with 100+ logs
 	auto request_start = std::chrono::high_resolution_clock::now();
 	auto entries_result = _log_files->get_entries();
 	auto request_end = std::chrono::high_resolution_clock::now();
@@ -224,7 +223,7 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 		}
 	}
 
-	LOG("Downloading  " << download_path);
+	LOG("Downloading " << download_path);
 
 	auto time_start = std::chrono::steady_clock::now();
 
@@ -327,10 +326,8 @@ void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 			return;
 		}
 
-		// Process the log upload
 		ServerInterface::UploadResult result = server->upload_log(filepath);
 
-		// Log the result
 		if (result.success) {
 			std::cout << "Log upload SUCCESS: " << result.message << std::endl;
 
