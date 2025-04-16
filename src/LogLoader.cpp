@@ -330,15 +330,14 @@ void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 		ServerInterface::UploadResult result = server->upload_log(filepath);
 
 		if (result.success) {
-			std::cout << "Log upload SUCCESS: " << result.message << std::endl;
+			LOG("Log upload SUCCESS: " << result.message);
 
 		} else if (result.status_code == 400) {
-			std::cout << "Log upload failed (" << result.status_code << "): "
-				  << result.message << std::endl;
+			LOG("Log upload failed (" << result.status_code << "): " << result.message);
 
 		} else {
-			std::cout << "Log upload TEMPORARILY FAILED (" << result.status_code << "): "
-				  << result.message << " - Will retry later" << std::endl;
+			LOG("Log upload TEMPORARILY FAILED (" << result.status_code << "): "
+			    << result.message << " - Will retry later");
 		}
 	}
 }
