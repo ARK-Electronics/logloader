@@ -1,11 +1,11 @@
 ![image](logloader_logo.png)
 
-Downloads PX4 log files (.ulg) and uploads them to the cloud.
+Downloads PX4 log files (.ulg) and uploads them to a local server and optionally a remote server.
 
 The **config.toml** file is used to configure the program settings.
 
 ### Behavior
-Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. The downloading thread will only download logs with a datetime greater than the most recent log found locally in the `logging_directory`. If no logs are found locally only the most recent log will be downloaded. The upload thread will only upload logs that are not recorded in the `uploaded_logs_file`. Logs are named with the ISO 8601 date and time format **yyyy-mm-ddThh:mm:ssZ.ulg**.
+Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database is used for the local and remote servers to track if a log file has been uploaded already or not.
 
 ### Build
 Install MAVSDK if you haven't already, the latest releases can be found at https://github.com/mavlink/MAVSDK/releases
