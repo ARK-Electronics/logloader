@@ -16,7 +16,9 @@ fi
 # Build the project
 pushd .
 cd "$THIS_DIR"
-make
+
+# For now we install in debug mode so we can monitor performance
+make debug
 popd
 
 # Setup project directory

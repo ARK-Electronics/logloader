@@ -6,8 +6,7 @@
 #include <mavsdk/log_callback.h>
 #include <condition_variable>
 
-#include "ServerUploadManager.hpp"
-#include "LogDatabase.hpp"
+#include "ServerInterface.hpp"
 
 class LogLoader
 {
@@ -31,23 +30,19 @@ public:
 private:
 	// Download
 	bool request_log_entries();
-	bool process_next_log();
+	bool download_next_log();
 	bool download_log(const mavsdk::LogFiles::Entry& entry);
 
 	// Upload
 	void upload_logs_thread();
-	std::string filepath_from_entry(const mavsdk::LogFiles::Entry entry);
-	std::string filepath_from_uuid(const std::string& uuid);
+	void upload_pending_logs(std::shared_ptr<ServerInterface> server);
 
 	Settings _settings;
 	std::string _logs_directory;
 
-	// Database for log tracking
-	std::shared_ptr<LogDatabase> _log_db;
-
-	// Server uploader objects
-	std::shared_ptr<ServerUploadManager> _local_server;
-	std::shared_ptr<ServerUploadManager> _remote_server;
+	// Server objects (each with its own database)
+	std::shared_ptr<ServerInterface> _local_server;
+	std::shared_ptr<ServerInterface> _remote_server;
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;

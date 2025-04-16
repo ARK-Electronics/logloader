@@ -1,4 +1,5 @@
 #include "LogLoader.hpp"
+#include "Log.hpp"
 #include <iostream>
 #include <filesystem>
 #include <future>
@@ -11,41 +12,35 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 	: _settings(settings)
 {
 	// Disable mavsdk noise
-	// mavsdk::log::subscribe([](...) {
-	//  // https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
-	//  return true;
-	// });
+	mavsdk::log::subscribe([](...) {
+		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
+		return true;
+	});
 
 	_logs_directory = _settings.application_directory + "logs/";
 
-	// Initialize the database
-	std::string db_path = _settings.application_directory + "logs.db";
-	_log_db = std::make_shared<LogDatabase>(db_path);
-
-	if (!_log_db->init()) {
-		std::cerr << "Failed to initialize log database" << std::endl;
-	}
-
-	ServerUploadManager::Settings local_server_settings = {
+	// Setup local server interface
+	ServerInterface::Settings local_server_settings = {
 		.server_url = settings.local_server,
 		.user_email = "",
 		.logs_directory = _logs_directory,
-		.uploaded_logs_file = _settings.application_directory + "local_uploaded_logs.txt",
+		.db_path = _settings.application_directory + "local_server.db",
 		.upload_enabled = true, // Always upload to local server
 		.public_logs = true, // Public required true for searching using Web UI
 	};
 
-	ServerUploadManager::Settings remote_server_settings = {
+	// Setup remote server interface
+	ServerInterface::Settings remote_server_settings = {
 		.server_url = settings.remote_server,
 		.user_email = settings.email,
 		.logs_directory = _logs_directory,
-		.uploaded_logs_file = _settings.application_directory + "uploaded_logs.txt",
+		.db_path = _settings.application_directory + "remote_server.db",
 		.upload_enabled = settings.upload_enabled,
 		.public_logs = settings.public_logs,
 	};
 
-	_local_server = std::make_shared<ServerUploadManager>(local_server_settings);
-	_remote_server = std::make_shared<ServerUploadManager>(remote_server_settings);
+	_local_server = std::make_shared<ServerInterface>(local_server_settings);
+	_remote_server = std::make_shared<ServerInterface>(remote_server_settings);
 
 	std::cout << std::fixed << std::setprecision(8);
 
@@ -58,29 +53,29 @@ void LogLoader::stop()
 		std::lock_guard<std::mutex> lock(_exit_cv_mutex);
 		_should_exit = true;
 	}
-	_exit_cv.notify_one();
+	_exit_cv.notify_all();
 }
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 {
-	std::cout << "Connecting to " << _settings.mavsdk_connection_url << std::endl;
+	LOG("Connecting to " << _settings.mavsdk_connection_url);
 	_mavsdk = std::make_shared<mavsdk::Mavsdk>(mavsdk::Mavsdk::Configuration(1, MAV_COMP_ID_ONBOARD_COMPUTER,
 			true)); // Emit heartbeats (Client)
 	auto result = _mavsdk->add_any_connection(_settings.mavsdk_connection_url);
 
 	if (result != mavsdk::ConnectionResult::Success) {
-		std::cout << "Connection failed: " << result << std::endl;
+		LOG("Connection failed: " << result);
 		return false;
 	}
 
 	auto system = _mavsdk->first_autopilot(timeout_ms);
 
 	if (!system) {
-		std::cout << "Timed out waiting for system" << std::endl;
+		LOG("Timed out waiting for system");
 		return false;
 	}
 
-	std::cout << "Connected to autopilot" << std::endl;
+	LOG("Connected.");
 
 	// MAVSDK plugins
 	_log_files = std::make_shared<mavsdk::LogFiles>(system.value());
@@ -115,14 +110,14 @@ void LogLoader::run()
 		}
 
 		if (!request_log_entries()) {
-			std::cout << "Failed to get logs" << std::endl;
+			LOG_DEBUG("Failed to get logs");
 			std::this_thread::sleep_for(std::chrono::seconds(5));
 			continue;
 		}
 
 		// Process one log at a time
-		while (process_next_log() && !_should_exit) {
-			// This will process one log at a time
+		while (!_should_exit && download_next_log()) {
+			// This will download one log at a time
 			// and check _should_exit after each download
 		}
 
@@ -133,75 +128,103 @@ void LogLoader::run()
 		}
 	}
 
+	LOG_DEBUG("Waiting for upload thread");
 	upload_thread.join();
 }
 
 bool LogLoader::request_log_entries()
 {
+	LOG_DEBUG("Requesting log entries...");
+
+	// Time the MAVSDK get_entries call
+	auto request_start = std::chrono::high_resolution_clock::now();
 	auto entries_result = _log_files->get_entries();
+	auto request_end = std::chrono::high_resolution_clock::now();
+
+	std::chrono::duration<double> request_duration = request_end - request_start;
+	LOG_DEBUG("Received log entries in " << request_duration.count() << " seconds");
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
+		LOG("Error getting log entries");
 		return false;
 	}
 
 	_log_entries = entries_result.second;
+	LOG_DEBUG("Found " << _log_entries.size() << " log entries");
 
-	// Add all entries to the database
+	// Time the database addition
+	auto db_start = std::chrono::high_resolution_clock::now();
+
 	for (const auto& entry : _log_entries) {
-		_log_db->add_log(entry);
+		_local_server->add_log_entry(entry);
+		_remote_server->add_log_entry(entry);
 	}
+
+	auto db_end = std::chrono::high_resolution_clock::now();
+	std::chrono::duration<double> db_duration = db_end - db_start;
+
+	LOG_DEBUG("Added log entries to databases in " << db_duration.count() << " seconds");
+	LOG_DEBUG("Total processing time: " << (request_duration + db_duration).count() << " seconds");
 
 	return true;
 }
 
-bool LogLoader::process_next_log()
+bool LogLoader::download_next_log()
 {
-	// Get one undownloaded log from the database
-	auto logs_to_download = _log_db->get_logs_to_download(1, 0);
+	// Get one undownloaded log, use the local server for query
+	ServerInterface::DatabaseEntry db_entry = _local_server->get_next_log_to_download();
 
-	if (logs_to_download.empty()) {
-		// No more logs to download
+	if (db_entry.uuid.empty()) {
 		return false;
 	}
 
-	auto& log_record = logs_to_download[0];
-
-	// Find the corresponding log entry
+	// Find the corresponding log entry in the list from the vehicle
 	for (const auto& entry : _log_entries) {
 		// Match by UUID (which is based on date and size)
-		std::string uuid = _log_db->generate_uuid(entry);
+		std::string uuid = ServerInterface::generate_uuid(entry);
 
-		if (uuid == log_record.uuid) {
+		if (uuid == db_entry.uuid) {
 			bool success = download_log(entry);
 
 			if (success) {
-				_log_db->update_download_status(uuid, true);
+				// Update downloaded status in both databases
+				_local_server->update_download_status(uuid, true);
+				_remote_server->update_download_status(uuid, true);
 			}
 
-			return true;  // Successfully processed one log
+			return true;
 		}
 	}
 
 	// Couldn't find matching entry in _log_entries
 	// This could happen if the log is no longer available on the vehicle
-	// Mark it as processed to avoid trying again
-	_log_db->update_download_status(log_record.uuid, true);
+	// Mark it as processed to avoid trying again in both databases
+	_local_server->update_download_status(db_entry.uuid, true);
+	_remote_server->update_download_status(db_entry.uuid, true);
 
-	return true;  // Continue processing more logs
+	return true;
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 {
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
+	auto download_path = _local_server->filepath_from_entry(entry);
 
-	auto download_path = filepath_from_entry(entry);
+	// Check and delete file if it already exists. This can occur due to partial download.
+	if (fs::exists(download_path)) {
+		LOG("Found existing file, removing: " << download_path);
 
-	std::cout << "Downloading  " << download_path << std::endl;
+		try {
+			fs::remove(download_path);
 
-	// Mark the file as currently being downloaded
-	std::ofstream lock_file(download_path + ".lock");
-	lock_file.close();
+		} catch (const fs::filesystem_error& e) {
+			LOG("Error removing existing file: " << e.what());
+			return false;
+		}
+	}
+
+	LOG("Downloading  " << download_path);
 
 	auto time_start = std::chrono::steady_clock::now();
 
@@ -214,10 +237,6 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 
 		auto now = std::chrono::steady_clock::now();
 
-		// Calculate data rate in Kbps
-		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0)) / std::chrono::duration_cast<std::chrono::milliseconds>(now -
-				   time_start).count(); // Convert bytes to bits and then to Kbps
-
 		if (_should_exit) {
 			_download_cancelled = true;
 			prom.set_value(mavsdk::LogFiles::Result::Timeout);
@@ -225,16 +244,24 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			return;
 		}
 
-		std::cout << "Downloading:  "
+#ifdef DEBUG_BUILD
+		// Calculate data rate in Kbps
+		double rate_kbps = ((progress.progress * entry.size_bytes * 8.0)) / std::chrono::duration_cast<std::chrono::milliseconds>(now -
+				   time_start).count(); // Convert bytes to bits and then to Kbps
+
+		LOG_DEBUG("Downloading: "
 			  << std::setw(24) << std::left << entry.date
 			  << std::setw(8) << std::fixed << std::setprecision(2) << entry.size_bytes / 1e6 << "MB"
 			  << std::setw(6) << std::right << int(progress.progress * 100.0f) << "%"
 			  << std::setw(12) << std::fixed << std::setprecision(2) << rate_kbps << " Kbps"
-			  << std::flush << std::endl;
+			  << std::flush);
+#else
+		(void)progress;
+#endif
 
 		if (result != mavsdk::LogFiles::Result::Next) {
 			double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(now - time_start).count() / 1000.;
-			std::cout << "Finished in " << std::setprecision(2) << seconds << " seconds" << std::endl;
+			LOG("Finished in " << std::setprecision(2) << seconds << " seconds");
 			prom.set_value(result);
 		}
 	});
@@ -246,79 +273,74 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 	bool success = result == mavsdk::LogFiles::Result::Success;
 
 	if (!success) {
-		std::cout << "Download failed" << std::endl;
+		LOG("Download failed");
 	}
-
-	// Remove lock_file indicating download is complete
-	std::filesystem::remove(download_path + ".lock");
 
 	return success;
 }
 
 void LogLoader::upload_logs_thread()
 {
-	// Short startup delay to allow the download thread to start re-downloading a
-	// potentially imcomplete log if the download was interrupted last time. We
-	// need to wait so that we don't race to check the _current_download.second
-	// status before the downloader marks the file as in-progress.
-	std::this_thread::sleep_for(std::chrono::seconds(5));
-
 	while (!_should_exit) {
 		if (_loop_disabled) {
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 		}
 
-		if (!_settings.remote_server.empty()) {
-			// Process one log at a time for remote server
-			auto logs_to_upload = _log_db->get_logs_to_upload_remote(1);
-
-			if (!logs_to_upload.empty()) {
-				auto& log = logs_to_upload[0];
-				std::string log_path = filepath_from_uuid(log.uuid);
-
-				if (_remote_server->upload_log(log_path)) {
-					_log_db->update_upload_status(log.uuid, log.local_uploaded, true);
-				}
-			}
+		// Process uploads for local server
+		if (!_should_exit && !_settings.local_server.empty()) {
+			upload_pending_logs(_local_server);
 		}
 
-		if (!_settings.local_server.empty()) {
-			// Process one log at a time for local server
-			auto logs_to_upload = _log_db->get_logs_to_upload_local(1);
-
-			if (!logs_to_upload.empty()) {
-				auto& log = logs_to_upload[0];
-				std::string log_path = filepath_from_uuid(log.uuid);
-
-				if (_local_server->upload_log(log_path)) {
-					_log_db->update_upload_status(log.uuid, true, log.remote_uploaded);
-				}
-			}
+		// Process uploads for remote server
+		if (!_should_exit && !_settings.remote_server.empty() && _settings.upload_enabled) {
+			upload_pending_logs(_remote_server);
 		}
 
-		std::this_thread::sleep_for(std::chrono::seconds(5));
-	}
-}
-
-std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry entry)
-{
-	std::ostringstream ss;
-	ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
-	return ss.str();
-}
-
-std::string LogLoader::filepath_from_uuid(const std::string& uuid)
-{
-	// Look up the log entry by UUID
-	auto record = _log_db->get_log_by_uuid(uuid);
-
-	if (record.uuid.empty()) {
-		return "";
+		if (!_should_exit) {
+			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
+			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
+			LOG_DEBUG("done waiting");
+		}
 	}
 
-	// Construct the file path using the log record
-	std::ostringstream ss;
-	ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << record.id << "_" << record.date << ".ulg";
-	return ss.str();
+	LOG_DEBUG("upload_logs_thread exiting");
+}
+
+void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
+{
+	// Upload all pending logs for this server
+	while (!_should_exit && server->has_logs_to_upload()) {
+
+		// Get one log at a time to upload
+		ServerInterface::DatabaseEntry log_entry = server->get_next_log_to_upload();
+
+		if (log_entry.uuid.empty()) {
+			LOG("Log with empty uuid!");
+			return;
+		}
+
+		std::string filepath = server->filepath_from_uuid(log_entry.uuid);
+
+		if (filepath.empty()) {
+			LOG("Could not determine file path for UUID: " << log_entry.uuid);
+			return;
+		}
+
+		// Process the log upload
+		ServerInterface::UploadResult result = server->upload_log(filepath);
+
+		// Log the result
+		if (result.success) {
+			std::cout << "Log upload SUCCESS: " << result.message << std::endl;
+
+		} else if (result.status_code == 400) {
+			std::cout << "Log upload failed (" << result.status_code << "): "
+				  << result.message << std::endl;
+
+		} else {
+			std::cout << "Log upload TEMPORARILY FAILED (" << result.status_code << "): "
+				  << result.message << " - Will retry later" << std::endl;
+		}
+	}
 }

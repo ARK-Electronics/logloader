@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 project(logloader VERSION 0.9 LANGUAGES CXX)
 
+# Add debug build option
+option(DEBUG_BUILD "Enable debug logging" OFF)
+if(DEBUG_BUILD)
+    add_definitions(-DDEBUG_BUILD)
+    message(STATUS "Debug logging enabled")
+endif()
+
 add_compile_options(-Wall -Wextra -Werror -Wpedantic -Wunused)
 
 find_package(OpenSSL 3.0.2 REQUIRED)
@@ -26,8 +33,7 @@ include_directories(${SQLite3_INCLUDE_DIRS})
 
 add_executable(${PROJECT_NAME}
     src/main.cpp
-    src/ServerUploadManager.cpp
-    src/LogDatabase.cpp
+    src/ServerInterface.cpp
     src/LogLoader.cpp)
 
 target_link_libraries(${PROJECT_NAME}
