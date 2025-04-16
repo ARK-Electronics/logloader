@@ -202,7 +202,7 @@ ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_upload()
 	DatabaseEntry entry = empty_entry;
 
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		entry = row_to_log_entry(stmt);
+		entry = row_to_db_entry(stmt);
 	}
 
 	sqlite3_finalize(stmt);
@@ -327,7 +327,7 @@ ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_download()
 	DatabaseEntry entry = empty_entry;
 
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		entry = row_to_log_entry(stmt);
+		entry = row_to_db_entry(stmt);
 	}
 
 	sqlite3_finalize(stmt);
@@ -547,7 +547,7 @@ bool ServerInterface::execute_query(const std::string& query)
 	return true;
 }
 
-ServerInterface::DatabaseEntry ServerInterface::row_to_log_entry(sqlite3_stmt* stmt)
+ServerInterface::DatabaseEntry ServerInterface::row_to_db_entry(sqlite3_stmt* stmt)
 {
 	DatabaseEntry entry;
 

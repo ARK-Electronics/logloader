@@ -71,7 +71,7 @@ private:
 	// Database operations
 	bool execute_query(const std::string& query);
 	bool add_to_blacklist(const std::string& uuid, const std::string& reason);
-	DatabaseEntry row_to_log_entry(sqlite3_stmt* stmt);
+	DatabaseEntry row_to_db_entry(sqlite3_stmt* stmt);
 
 	Settings _settings;
 	Protocol _protocol {Protocol::Https};
