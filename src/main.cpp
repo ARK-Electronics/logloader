@@ -1,4 +1,5 @@
 #include "LogLoader.hpp"
+#include "Log.hpp"
 #include <signal.h>
 #include <iostream>
 #include <toml.hpp>
@@ -51,7 +52,7 @@ int main()
 		_log_loader->run();
 	}
 
-	std::cout << "Exiting." << std::endl;
+	LOG("Exiting.");
 
 	return 0;
 }
