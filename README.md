@@ -5,9 +5,13 @@ Downloads PX4 log files (.ulg) and uploads them to a local server and optionally
 The **config.toml** file is used to configure the program settings.
 
 ### Behavior
-Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database is used for the local and remote servers to track if a log file has been uploaded already or not.
+Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database per server is used to track log file download/upload status.
 
 ### Build
+Install dependencies
+```
+sudo apt-get install libsqlite3-dev
+```
 Install MAVSDK if you haven't already, the latest releases can be found at https://github.com/mavlink/MAVSDK/releases
 ```
 sudo dpkg -i libmavsdk-dev_2.4.1_debian12_arm64.deb
