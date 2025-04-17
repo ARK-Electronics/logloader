@@ -42,9 +42,10 @@ public:
 	static std::string generate_uuid(const mavsdk::LogFiles::Entry& entry);
 	bool add_log_entry(const mavsdk::LogFiles::Entry& entry);
 	bool update_download_status(const std::string& uuid, bool downloaded);
+	uint32_t num_logs_to_download();
 
 	// Upload management
-	bool has_logs_to_upload();
+	uint32_t num_logs_to_upload();
 	DatabaseEntry get_next_log_to_upload();
 	UploadResult upload_log(const std::string& filepath);
 

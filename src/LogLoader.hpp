@@ -30,7 +30,7 @@ public:
 private:
 	// Download
 	bool request_log_entries();
-	bool download_next_log();
+	void download_next_log();
 	bool download_log(const mavsdk::LogFiles::Entry& entry);
 
 	// Upload

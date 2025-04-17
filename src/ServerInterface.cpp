@@ -151,7 +151,7 @@ bool ServerInterface::update_download_status(const std::string& uuid, bool downl
 	return success;
 }
 
-bool ServerInterface::has_logs_to_upload()
+uint32_t ServerInterface::num_logs_to_upload()
 {
 	if (!_settings.upload_enabled || _should_exit) {
 		return false;
@@ -168,14 +168,14 @@ bool ServerInterface::has_logs_to_upload()
 		return false;
 	}
 
-	bool has_logs = false;
+	uint32_t log_count = 0;
 
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		has_logs = sqlite3_column_int(stmt, 0) > 0;
+		log_count = sqlite3_column_int(stmt, 0);
 	}
 
 	sqlite3_finalize(stmt);
-	return has_logs;
+	return log_count;
 }
 
 ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_upload()
@@ -306,6 +306,28 @@ bool ServerInterface::is_blacklisted(const std::string& uuid)
 
 	sqlite3_finalize(stmt);
 	return blacklisted;
+}
+
+uint32_t ServerInterface::num_logs_to_download()
+{
+	sqlite3_stmt* stmt;
+	std::string query =
+		"SELECT COUNT(*) FROM logs "
+		"WHERE downloaded = 0";
+
+	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing num_logs_to_download: " << sqlite3_errmsg(_db) << std::endl;
+		return 0;
+	}
+
+	uint32_t log_count = 0;
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		log_count = sqlite3_column_int(stmt, 0);
+	}
+
+	sqlite3_finalize(stmt);
+	return log_count;
 }
 
 ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_download()

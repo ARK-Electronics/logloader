@@ -110,14 +110,23 @@ void LogLoader::run()
 			std::this_thread::sleep_for(std::chrono::seconds(3));
 		}
 
+		// TODO:
+		// - request log entries at boot after connecting only
+		// - during runtime gate the log entry request on logger on/off events
 		if (!request_log_entries()) {
 			LOG_DEBUG("Failed to get logs");
 			std::this_thread::sleep_for(std::chrono::seconds(5));
 			continue;
 		}
 
-		while (!_should_exit && download_next_log()) {
+		uint32_t total_to_download = _local_server->num_logs_to_download();
+		uint32_t num_remaining = total_to_download;
+
+		while (!_should_exit && num_remaining) {
 			// Download logs until we should exit or there are none left to download
+			LOG("Downloading log " << total_to_download - num_remaining + 1 << "/" << total_to_download);
+			download_next_log();
+			num_remaining = _local_server->num_logs_to_download();
 		}
 
 		// Periodically request log list
@@ -138,18 +147,19 @@ bool LogLoader::request_log_entries()
 	// Debug profiling code. We need to check how this performs with 100+ logs
 	auto request_start = std::chrono::high_resolution_clock::now();
 	auto entries_result = _log_files->get_entries();
+
+	//  Store log entries
+	_log_entries = entries_result.second;
+
 	auto request_end = std::chrono::high_resolution_clock::now();
 
 	std::chrono::duration<double> request_duration = request_end - request_start;
-	LOG_DEBUG("Received log entries in " << request_duration.count() << " seconds");
+	LOG_DEBUG("Received " << _log_entries.size() << "log entries in " << request_duration.count() << " seconds");
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
 		LOG("Error getting log entries");
 		return false;
 	}
-
-	_log_entries = entries_result.second;
-	LOG_DEBUG("Found " << _log_entries.size() << " log entries");
 
 	// Time the database addition
 	auto db_start = std::chrono::high_resolution_clock::now();
@@ -168,13 +178,13 @@ bool LogLoader::request_log_entries()
 	return true;
 }
 
-bool LogLoader::download_next_log()
+void LogLoader::download_next_log()
 {
 	// Get one undownloaded log, use the local server for query
 	ServerInterface::DatabaseEntry db_entry = _local_server->get_next_log_to_download();
 
 	if (db_entry.uuid.empty()) {
-		return false;
+		return;
 	}
 
 	// Find the corresponding log entry in the list from the vehicle
@@ -183,15 +193,13 @@ bool LogLoader::download_next_log()
 		std::string uuid = ServerInterface::generate_uuid(entry);
 
 		if (uuid == db_entry.uuid) {
-			bool success = download_log(entry);
-
-			if (success) {
+			if (download_log(entry)) {
 				// Update downloaded status in both databases
 				_local_server->update_download_status(uuid, true);
 				_remote_server->update_download_status(uuid, true);
 			}
 
-			return true;
+			return;
 		}
 	}
 
@@ -201,7 +209,7 @@ bool LogLoader::download_next_log()
 	_local_server->update_download_status(db_entry.uuid, true);
 	_remote_server->update_download_status(db_entry.uuid, true);
 
-	return true;
+	return;
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
@@ -286,21 +294,25 @@ void LogLoader::upload_logs_thread()
 			continue;
 		}
 
+		// Query the number of pending log uploads for both servers
+		uint32_t num_logs_local = _local_server->num_logs_to_upload();
+		uint32_t num_logs_remote = _remote_server->num_logs_to_upload();
+
 		// Process uploads for local server
-		if (!_should_exit && !_settings.local_server.empty()) {
+		if (!_should_exit && !_settings.local_server.empty() && num_logs_local) {
+			LOG_DEBUG("Uploading " << num_logs_local << " logs to LOCAL server");
 			upload_pending_logs(_local_server);
 		}
 
 		// Process uploads for remote server
-		if (!_should_exit && !_settings.remote_server.empty() && _settings.upload_enabled) {
+		if (!_should_exit && !_settings.remote_server.empty() && _settings.upload_enabled && num_logs_remote) {
+			LOG_DEBUG("Uploading " << num_logs_remote << " logs to REMOTE server");
 			upload_pending_logs(_remote_server);
 		}
 
 		if (!_should_exit) {
-			LOG_DEBUG("upload thread sleeping");
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-			_exit_cv.wait_for(lock, std::chrono::seconds(30), [this] { return _should_exit.load(); });
-			LOG_DEBUG("upload thread woke up");
+			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
 		}
 	}
 
@@ -310,7 +322,7 @@ void LogLoader::upload_logs_thread()
 void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 {
 	// Upload all pending logs for this server
-	while (!_should_exit && server->has_logs_to_upload()) {
+	while (!_should_exit && server->num_logs_to_upload()) {
 
 		// Get one log at a time to upload
 		ServerInterface::DatabaseEntry log_entry = server->get_next_log_to_upload();
