@@ -15,10 +15,19 @@ int main()
 	signal(SIGTERM, signal_handler);
 	setbuf(stdout, NULL); // Disable stdout buffering
 
+	const char* home_env = getenv("HOME");
+
+	if (home_env == nullptr) {
+		std::cerr << "Error: HOME environment variable is not set\n";
+		return -1;
+	}
+
+	std::string home(home_env);
+
 	toml::table config;
 
 	try {
-		config = toml::parse_file(std::string(getenv("HOME")) + "/.local/share/logloader/config.toml");
+		config = toml::parse_file(home + "/.local/share/logloader/config.toml");
 
 	} catch (const toml::parse_error& err) {
 		std::cerr << "Parsing failed:\n" << err << "\n";
@@ -29,15 +38,22 @@ int main()
 		return -1;
 	}
 
+	// Parse Roboto settings from [roboto] table
+	auto roboto_table = config["roboto"];
+
 	// Setup the LogLoader
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
 		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
 		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.application_directory = std::string(getenv("HOME")) + "/.local/share/logloader/",
+		.application_directory = home + "/.local/share/logloader/",
 		.upload_enabled = config["upload_enabled"].value_or(false),
-		.public_logs = config["public_logs"].value_or(false)
+		.public_logs = config["public_logs"].value_or(false),
+		.roboto_api_url = roboto_table["api_url"].value_or(""),
+		.roboto_api_token = roboto_table["api_token"].value_or(""),
+		.roboto_device_id = roboto_table["device_id"].value_or(""),
+		.roboto_upload_enabled = roboto_table["upload_enabled"].value_or(false),
 	};
 
 	_log_loader = std::make_shared<LogLoader>(settings);

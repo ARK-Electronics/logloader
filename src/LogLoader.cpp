@@ -3,8 +3,8 @@
 #include <iostream>
 #include <filesystem>
 #include <future>
-#include <regex>
 #include <fstream>
+#include <functional>
 
 namespace fs = std::filesystem;
 
@@ -19,32 +19,53 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 
 	_logs_directory = _settings.application_directory + "logs/";
 
-	// Setup local server interface
-	ServerInterface::Settings local_server_settings = {
+	// Initialize downloads database
+	if (!init_downloads_db()) {
+		std::cerr << "Failed to initialize downloads database" << std::endl;
+	}
+
+	// Setup local flight review backend
+	FlightReviewBackend::Settings local_server_settings = {
 		.server_url = settings.local_server,
 		.user_email = "",
-		.logs_directory = _logs_directory,
 		.db_path = _settings.application_directory + "local_server.db",
 		.upload_enabled = true, // Always upload to local server
 		.public_logs = true, // Public required true for searching using Web UI
 	};
 
-	// Setup remote server interface
-	ServerInterface::Settings remote_server_settings = {
+	// Setup remote flight review backend
+	FlightReviewBackend::Settings remote_server_settings = {
 		.server_url = settings.remote_server,
 		.user_email = settings.email,
-		.logs_directory = _logs_directory,
 		.db_path = _settings.application_directory + "remote_server.db",
 		.upload_enabled = settings.upload_enabled,
 		.public_logs = settings.public_logs,
 	};
 
-	_local_server = std::make_shared<ServerInterface>(local_server_settings);
-	_remote_server = std::make_shared<ServerInterface>(remote_server_settings);
+	_local_server = std::make_shared<FlightReviewBackend>(local_server_settings);
+	_remote_server = std::make_shared<FlightReviewBackend>(remote_server_settings);
+
+	// Setup Roboto backend
+	if (!settings.roboto_api_url.empty() && !settings.roboto_api_token.empty()) {
+		RobotoBackend::Settings roboto_settings = {
+			.api_url = settings.roboto_api_url,
+			.api_token = settings.roboto_api_token,
+			.device_id = settings.roboto_device_id,
+			.db_path = _settings.application_directory + "roboto.db",
+			.upload_enabled = settings.roboto_upload_enabled,
+		};
+
+		_roboto_backend = std::make_shared<RobotoBackend>(roboto_settings);
+	}
 
 	std::cout << std::fixed << std::setprecision(8);
 
 	fs::create_directories(_logs_directory);
+}
+
+LogLoader::~LogLoader()
+{
+	close_downloads_db();
 }
 
 void LogLoader::stop()
@@ -55,6 +76,237 @@ void LogLoader::stop()
 	}
 	_exit_cv.notify_all();
 }
+
+// --- Download tracking database ---
+
+bool LogLoader::init_downloads_db()
+{
+	std::string db_path = _settings.application_directory + "downloads.db";
+	int rc = sqlite3_open(db_path.c_str(), &_downloads_db);
+
+	if (rc != SQLITE_OK) {
+		std::cerr << "Cannot open downloads database: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		sqlite3_close(_downloads_db);
+		_downloads_db = nullptr;
+		return false;
+	}
+
+	const char* create_table =
+		"CREATE TABLE IF NOT EXISTS logs ("
+		"  uuid TEXT PRIMARY KEY,"
+		"  id INTEGER,"
+		"  date TEXT,"
+		"  size_bytes INTEGER,"
+		"  downloaded INTEGER DEFAULT 0"
+		");";
+
+	char* error_msg = nullptr;
+	rc = sqlite3_exec(_downloads_db, create_table, nullptr, nullptr, &error_msg);
+
+	if (rc != SQLITE_OK) {
+		std::cerr << "SQL error creating downloads table: " << error_msg << std::endl;
+		sqlite3_free(error_msg);
+		return false;
+	}
+
+	return true;
+}
+
+void LogLoader::close_downloads_db()
+{
+	if (_downloads_db) {
+		sqlite3_close(_downloads_db);
+		_downloads_db = nullptr;
+	}
+}
+
+std::string LogLoader::generate_uuid(const mavsdk::LogFiles::Entry& entry)
+{
+	// Create a unique identifier based on date and size
+	std::stringstream ss;
+	ss << entry.date << "_" << entry.size_bytes;
+
+	// Use a simple hash for the UUID
+	std::hash<std::string> hasher;
+	size_t hash = hasher(ss.str());
+
+	ss.str("");
+	ss << std::hex << std::setw(16) << std::setfill('0') << hash;
+	return ss.str();
+}
+
+bool LogLoader::add_log_entry(const mavsdk::LogFiles::Entry& entry)
+{
+	std::string uuid = generate_uuid(entry);
+
+	// Check if already exists
+	sqlite3_stmt* stmt;
+	std::string check_query = "SELECT COUNT(*) FROM logs WHERE uuid = ?";
+
+	if (sqlite3_prepare_v2(_downloads_db, check_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing add_log_entry check: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
+
+	bool exists = false;
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		exists = sqlite3_column_int(stmt, 0) > 0;
+	}
+
+	sqlite3_finalize(stmt);
+
+	if (exists) {
+		return true;
+	}
+
+	// Insert
+	std::string insert_query =
+		"INSERT INTO logs (uuid, id, date, size_bytes, downloaded) "
+		"VALUES (?, ?, ?, ?, 0)";
+
+	if (sqlite3_prepare_v2(_downloads_db, insert_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing add_log_entry insert: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 2, entry.id);
+	sqlite3_bind_text(stmt, 3, entry.date.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 4, entry.size_bytes);
+
+	bool success = sqlite3_step(stmt) == SQLITE_DONE;
+	sqlite3_finalize(stmt);
+
+	return success;
+}
+
+bool LogLoader::update_download_status(const std::string& uuid, bool downloaded)
+{
+	std::string query = "UPDATE logs SET downloaded = ? WHERE uuid = ?";
+	sqlite3_stmt* stmt;
+
+	if (sqlite3_prepare_v2(_downloads_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing update_download_status: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return false;
+	}
+
+	sqlite3_bind_int(stmt, 1, downloaded ? 1 : 0);
+	sqlite3_bind_text(stmt, 2, uuid.c_str(), -1, SQLITE_STATIC);
+
+	bool success = sqlite3_step(stmt) == SQLITE_DONE;
+	sqlite3_finalize(stmt);
+
+	return success;
+}
+
+uint32_t LogLoader::num_logs_to_download()
+{
+	sqlite3_stmt* stmt;
+	std::string query = "SELECT COUNT(*) FROM logs WHERE downloaded = 0";
+
+	if (sqlite3_prepare_v2(_downloads_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing num_logs_to_download: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return 0;
+	}
+
+	uint32_t count = 0;
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		count = sqlite3_column_int(stmt, 0);
+	}
+
+	sqlite3_finalize(stmt);
+	return count;
+}
+
+LogLoader::DownloadEntry LogLoader::get_next_log_to_download()
+{
+	DownloadEntry empty{};
+
+	sqlite3_stmt* stmt;
+	std::string query =
+		"SELECT uuid, id, date, size_bytes FROM logs "
+		"WHERE downloaded = 0 "
+		"ORDER BY date DESC, size_bytes DESC LIMIT 1";
+
+	if (sqlite3_prepare_v2(_downloads_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing get_next_log_to_download: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return empty;
+	}
+
+	DownloadEntry entry{};
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		const unsigned char* uuid_text = sqlite3_column_text(stmt, 0);
+
+		if (uuid_text != nullptr) {
+			entry.uuid = reinterpret_cast<const char*>(uuid_text);
+		}
+
+		entry.id = sqlite3_column_int(stmt, 1);
+
+		const unsigned char* date_text = sqlite3_column_text(stmt, 2);
+
+		if (date_text != nullptr) {
+			entry.date = reinterpret_cast<const char*>(date_text);
+		}
+
+		entry.size_bytes = sqlite3_column_int(stmt, 3);
+	}
+
+	sqlite3_finalize(stmt);
+	return entry;
+}
+
+std::string LogLoader::filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const
+{
+	std::ostringstream ss;
+	ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
+	return ss.str();
+}
+
+std::string LogLoader::filepath_from_uuid(const std::string& uuid) const
+{
+	sqlite3_stmt* stmt;
+	std::string query = "SELECT id, date FROM logs WHERE uuid = ?";
+
+	if (sqlite3_prepare_v2(_downloads_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing filepath_from_uuid: " << sqlite3_errmsg(_downloads_db) << std::endl;
+		return "";
+	}
+
+	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
+
+	std::string filepath;
+
+	if (sqlite3_step(stmt) == SQLITE_ROW) {
+		int id = sqlite3_column_int(stmt, 0);
+		const unsigned char* date_text = sqlite3_column_text(stmt, 1);
+
+		if (date_text != nullptr) {
+			std::string date = reinterpret_cast<const char*>(date_text);
+			std::ostringstream ss;
+			ss << _logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date << ".ulg";
+			filepath = ss.str();
+		}
+	}
+
+	sqlite3_finalize(stmt);
+	return filepath;
+}
+
+void LogLoader::register_log_with_backends(const std::string& uuid)
+{
+	_local_server->register_log(uuid);
+	_remote_server->register_log(uuid);
+
+	if (_roboto_backend) _roboto_backend->register_log(uuid);
+}
+
+// --- MAVSDK connection ---
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 {
@@ -84,6 +336,8 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 	return true;
 }
 
+// --- Main loop ---
+
 void LogLoader::run()
 {
 	auto upload_thread = std::thread(&LogLoader::upload_logs_thread, this);
@@ -99,6 +353,9 @@ void LogLoader::run()
 			_loop_disabled = true;
 			_remote_server->stop();
 			_local_server->stop();
+
+			if (_roboto_backend) _roboto_backend->stop();
+
 			std::this_thread::sleep_for(std::chrono::seconds(1));
 			continue;
 
@@ -106,6 +363,9 @@ void LogLoader::run()
 			_loop_disabled = false;
 			_remote_server->start();
 			_local_server->start();
+
+			if (_roboto_backend) _roboto_backend->start();
+
 			// Stall for a few seconds to allow logger to finish writing
 			std::this_thread::sleep_for(std::chrono::seconds(3));
 		}
@@ -119,14 +379,14 @@ void LogLoader::run()
 			continue;
 		}
 
-		uint32_t total_to_download = _local_server->num_logs_to_download();
+		uint32_t total_to_download = num_logs_to_download();
 		uint32_t num_remaining = total_to_download;
 
 		while (!_should_exit && num_remaining) {
 			// Download logs until we should exit or there are none left to download
 			LOG("Downloading log " << total_to_download - num_remaining + 1 << "/" << total_to_download);
 			download_next_log();
-			num_remaining = _local_server->num_logs_to_download();
+			num_remaining = num_logs_to_download();
 		}
 
 		// Periodically request log list
@@ -139,6 +399,8 @@ void LogLoader::run()
 	LOG_DEBUG("Waiting for upload thread");
 	upload_thread.join();
 }
+
+// --- Download ---
 
 bool LogLoader::request_log_entries()
 {
@@ -154,7 +416,7 @@ bool LogLoader::request_log_entries()
 	auto request_end = std::chrono::high_resolution_clock::now();
 
 	std::chrono::duration<double> request_duration = request_end - request_start;
-	LOG_DEBUG("Received " << _log_entries.size() << "log entries in " << request_duration.count() << " seconds");
+	LOG_DEBUG("Received " << _log_entries.size() << " log entries in " << request_duration.count() << " seconds");
 
 	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
 		LOG("Error getting log entries");
@@ -165,14 +427,13 @@ bool LogLoader::request_log_entries()
 	auto db_start = std::chrono::high_resolution_clock::now();
 
 	for (const auto& entry : _log_entries) {
-		_local_server->add_log_entry(entry);
-		_remote_server->add_log_entry(entry);
+		add_log_entry(entry);
 	}
 
 	auto db_end = std::chrono::high_resolution_clock::now();
 	std::chrono::duration<double> db_duration = db_end - db_start;
 
-	LOG_DEBUG("Added log entries to databases in " << db_duration.count() << " seconds");
+	LOG_DEBUG("Added log entries to database in " << db_duration.count() << " seconds");
 	LOG_DEBUG("Total processing time: " << (request_duration + db_duration).count() << " seconds");
 
 	return true;
@@ -180,8 +441,7 @@ bool LogLoader::request_log_entries()
 
 void LogLoader::download_next_log()
 {
-	// Get one undownloaded log, use the local server for query
-	ServerInterface::DatabaseEntry db_entry = _local_server->get_next_log_to_download();
+	DownloadEntry db_entry = get_next_log_to_download();
 
 	if (db_entry.uuid.empty()) {
 		return;
@@ -189,14 +449,12 @@ void LogLoader::download_next_log()
 
 	// Find the corresponding log entry in the list from the vehicle
 	for (const auto& entry : _log_entries) {
-		// Match by UUID (which is based on date and size)
-		std::string uuid = ServerInterface::generate_uuid(entry);
+		std::string uuid = generate_uuid(entry);
 
 		if (uuid == db_entry.uuid) {
 			if (download_log(entry)) {
-				// Update downloaded status in both databases
-				_local_server->update_download_status(uuid, true);
-				_remote_server->update_download_status(uuid, true);
+				update_download_status(uuid, true);
+				register_log_with_backends(uuid);
 			}
 
 			return;
@@ -205,18 +463,15 @@ void LogLoader::download_next_log()
 
 	// Couldn't find matching entry in _log_entries
 	// This could happen if the log is no longer available on the vehicle
-	// Mark it as processed to avoid trying again in both databases
-	_local_server->update_download_status(db_entry.uuid, true);
-	_remote_server->update_download_status(db_entry.uuid, true);
-
-	return;
+	// Mark it as downloaded to avoid trying again
+	update_download_status(db_entry.uuid, true);
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 {
 	auto prom = std::promise<mavsdk::LogFiles::Result> {};
 	auto future_result = prom.get_future();
-	auto download_path = _local_server->filepath_from_entry(entry);
+	auto download_path = filepath_from_entry(entry);
 
 	// Check and delete file if it already exists. This can occur due to partial download.
 	if (fs::exists(download_path)) {
@@ -286,6 +541,8 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 	return success;
 }
 
+// --- Upload ---
+
 void LogLoader::upload_logs_thread()
 {
 	while (!_should_exit) {
@@ -294,7 +551,7 @@ void LogLoader::upload_logs_thread()
 			continue;
 		}
 
-		// Query the number of pending log uploads for both servers
+		// Query the number of pending log uploads for all backends
 		uint32_t num_logs_local = _local_server->num_logs_to_upload();
 		uint32_t num_logs_remote = _remote_server->num_logs_to_upload();
 
@@ -310,6 +567,16 @@ void LogLoader::upload_logs_thread()
 			upload_pending_logs(_remote_server);
 		}
 
+		// Process uploads for Roboto
+		if (!_should_exit && _roboto_backend) {
+			uint32_t num_logs_roboto = _roboto_backend->num_logs_to_upload();
+
+			if (num_logs_roboto) {
+				LOG_DEBUG("Uploading " << num_logs_roboto << " logs to ROBOTO");
+				upload_pending_logs(_roboto_backend);
+			}
+		}
+
 		if (!_should_exit) {
 			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
 			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
@@ -319,27 +586,29 @@ void LogLoader::upload_logs_thread()
 	LOG_DEBUG("upload_logs_thread exiting");
 }
 
-void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
+void LogLoader::upload_pending_logs(std::shared_ptr<UploadBackend> backend)
 {
-	// Upload all pending logs for this server
-	while (!_should_exit && server->num_logs_to_upload()) {
+	// Upload all pending logs for this backend
+	while (!_should_exit && backend->num_logs_to_upload()) {
 
 		// Get one log at a time to upload
-		ServerInterface::DatabaseEntry log_entry = server->get_next_log_to_upload();
+		std::string uuid = backend->get_next_log_to_upload();
 
-		if (log_entry.uuid.empty()) {
+		if (uuid.empty()) {
 			LOG("Log with empty uuid!");
-			return;
+			break;
 		}
 
-		std::string filepath = server->filepath_from_uuid(log_entry.uuid);
+		std::string filepath = filepath_from_uuid(uuid);
 
 		if (filepath.empty()) {
-			LOG("Could not determine file path for UUID: " << log_entry.uuid);
-			return;
+			LOG("Could not determine file path for UUID: " << uuid);
+			// Blacklist to prevent infinite retry
+			backend->add_to_blacklist(uuid, "Could not determine file path");
+			continue;
 		}
 
-		ServerInterface::UploadResult result = server->upload_log(filepath);
+		UploadBackend::UploadResult result = backend->upload_log(filepath, uuid);
 
 		if (result.success) {
 			LOG("Log upload SUCCESS: " << result.message);
