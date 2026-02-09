@@ -28,7 +28,7 @@ find_package(MAVSDK REQUIRED)
 
 include_directories(third_party/cpp-httplib/)
 include_directories(third_party/tomlplusplus/)
-include_directories(third_party/nlohmann/)
+include_directories(third_party/nlohmann/include/)
 include_directories(${SQLite3_INCLUDE_DIRS})
 
 add_executable(${PROJECT_NAME}
