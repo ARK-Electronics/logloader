@@ -28,11 +28,14 @@ find_package(MAVSDK REQUIRED)
 
 include_directories(third_party/cpp-httplib/)
 include_directories(third_party/tomlplusplus/)
+include_directories(third_party/nlohmann/)
 include_directories(${SQLite3_INCLUDE_DIRS})
 
 add_executable(${PROJECT_NAME}
     src/main.cpp
-    src/ServerInterface.cpp
+    src/UploadBackend.cpp
+    src/FlightReviewBackend.cpp
+    src/RobotoBackend.cpp
     src/LogLoader.cpp)
 
 target_link_libraries(${PROJECT_NAME}

@@ -4,3 +4,9 @@ remote_server = "https://review.px4.io"
 email = ""
 upload_enabled = false
 public_logs = false
+
+[roboto]
+upload_enabled = false
+api_url = "https://api.roboto.ai"
+api_token = ""
+device_id = ""

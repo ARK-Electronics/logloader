@@ -5,8 +5,10 @@
 #include <mavsdk/plugins/log_files/log_files.h>
 #include <mavsdk/log_callback.h>
 #include <condition_variable>
+#include <sqlite3.h>
 
-#include "ServerInterface.hpp"
+#include "FlightReviewBackend.hpp"
+#include "RobotoBackend.hpp"
 
 class LogLoader
 {
@@ -19,15 +21,40 @@ public:
 		std::string application_directory;
 		bool upload_enabled;
 		bool public_logs;
+		// Roboto settings
+		std::string roboto_api_url;
+		std::string roboto_api_token;
+		std::string roboto_device_id;
+		bool roboto_upload_enabled;
 	};
 
 	LogLoader(const Settings& settings);
+	~LogLoader();
 
 	void run();
 	void stop();
 	bool wait_for_mavsdk_connection(double timeout_ms);
 
 private:
+	// Download tracking (single database for all backends)
+	bool init_downloads_db();
+	void close_downloads_db();
+	static std::string generate_uuid(const mavsdk::LogFiles::Entry& entry);
+	bool add_log_entry(const mavsdk::LogFiles::Entry& entry);
+	bool update_download_status(const std::string& uuid, bool downloaded);
+	uint32_t num_logs_to_download();
+
+	struct DownloadEntry {
+		std::string uuid;
+		uint32_t id;
+		std::string date;
+		uint32_t size_bytes;
+	};
+
+	DownloadEntry get_next_log_to_download();
+	std::string filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const;
+	std::string filepath_from_uuid(const std::string& uuid) const;
+
 	// Download
 	bool request_log_entries();
 	void download_next_log();
@@ -35,14 +62,21 @@ private:
 
 	// Upload
 	void upload_logs_thread();
-	void upload_pending_logs(std::shared_ptr<ServerInterface> server);
+	void upload_pending_logs(std::shared_ptr<UploadBackend> backend);
+
+	// Register a downloaded log with all upload backends
+	void register_log_with_backends(const std::string& uuid);
 
 	Settings _settings;
 	std::string _logs_directory;
 
-	// Server objects (each with its own database)
-	std::shared_ptr<ServerInterface> _local_server;
-	std::shared_ptr<ServerInterface> _remote_server;
+	// Downloads database
+	sqlite3* _downloads_db = nullptr;
+
+	// Upload backends (each with its own database)
+	std::shared_ptr<FlightReviewBackend> _local_server;
+	std::shared_ptr<FlightReviewBackend> _remote_server;
+	std::shared_ptr<RobotoBackend> _roboto_backend;
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;
@@ -55,5 +89,5 @@ private:
 	std::condition_variable _exit_cv;
 	std::mutex _exit_cv_mutex;
 
-	bool _loop_disabled = false;
+	std::atomic<bool> _loop_disabled{false};
 };
