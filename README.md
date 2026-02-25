@@ -72,10 +72,11 @@ make install
 ```
 | | |
 |---------------------|-----------------------------------------|
-| **Binary path**      | `~/.local/bin`                       |
-| **Application directory** | `~/.local/share/logloader/`       |
-| **Logs directory**   | `~/.local/share/logloader/logs/`       |
-| **Config File**      | `~/.local/share/logloader/config.toml` |
+| **Binary path**      | `/opt/ark/bin/`                       |
+| **Default config**   | `/opt/ark/share/logloader/config.toml` |
+| **User config**      | `~/.config/ark/logloader/config.toml`  |
+| **Data directory**   | `~/.local/share/ark/logloader/`        |
+| **Logs directory**   | `~/.local/share/ark/logloader/logs/`   |
 
 ### Performance
 Monitor network traffic
