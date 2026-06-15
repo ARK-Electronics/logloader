@@ -52,12 +52,12 @@ int main(int argc, char** argv)
 	const auto data_dir = std::filesystem::path(home) / ".local/share/ark/logloader";
 	std::filesystem::create_directories(data_dir);
 
-	// Setup the LogLoader
+	// Setup the LogLoader. Note: connection_url is consumed by the pymavlink downloader
+	// (logloader_download.py), not by this uploader, so it is not read here.
 	LogLoader::Settings settings = {
 		.email = config["email"].value_or(""),
 		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
 		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
-		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
 		.application_directory = config["application_directory"].value_or(data_dir.string() + "/"),
 		.upload_enabled = config["upload_enabled"].value_or(false),
 		.public_logs = config["public_logs"].value_or(false)
@@ -65,13 +65,7 @@ int main(int argc, char** argv)
 
 	_log_loader = std::make_shared<LogLoader>(settings);
 
-	bool connected = false;
-
-	while (!_should_exit && !connected) {
-		connected = _log_loader->wait_for_mavsdk_connection(3);
-	}
-
-	if (!_should_exit && connected) {
+	if (!_should_exit) {
 		_log_loader->run();
 	}
 

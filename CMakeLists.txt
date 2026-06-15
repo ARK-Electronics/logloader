@@ -22,9 +22,8 @@ message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 message(STATUS "SQLite3 include dir: ${SQLite3_INCLUDE_DIRS}")
 message(STATUS "SQLite3 libraries: ${SQLite3_LIBRARIES}")
 
-# Assumes MAVSDK system wide install
-list(APPEND CMAKE_PREFIX_PATH "/usr/local/MAVSDK/install")
-find_package(MAVSDK REQUIRED)
+# Log download is handled out-of-process by logloader_download.py (pymavlink), so this
+# uploader no longer links MAVSDK.
 
 include_directories(third_party/cpp-httplib/)
 include_directories(third_party/tomlplusplus/)
@@ -39,5 +38,4 @@ target_link_libraries(${PROJECT_NAME}
     pthread
     OpenSSL::SSL
     OpenSSL::Crypto
-    MAVSDK::mavsdk
     ${SQLite3_LIBRARIES})

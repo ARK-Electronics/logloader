@@ -1,28 +1,23 @@
 ![image](logloader_logo.png)
 
-Downloads PX4 log files (.ulg) and uploads them to a local server and optionally a remote server.
+Downloads ArduPilot DataFlash log files (.bin) and uploads them to a local server and optionally a remote server.
 
 The **config.toml** file is used to configure the program settings.
 
 ### Behavior
-Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database per server is used to track log file download/upload status.
+logloader is split into two cooperating programs that coordinate through the `logs/` directory:
+- **`logloader_download.py`** (pymavlink) downloads ArduPilot DataFlash `.bin` logs over MAVLink while the vehicle is disarmed, writing each completed file into `logs/`.
+- **`logloader`** (C++) watches `logs/`, and uploads new logs to a local server and optionally a remote one.
+
+An sqlite database per server tracks log upload status.
+
+> Note: MAVSDK's `LogFiles` plugin does not work against ArduPilot (`LOG_REQUEST_LIST` times out), so the download side uses pymavlink and the C++ binary no longer depends on MAVSDK.
 
 ### Build
 Install dependencies
 ```
 sudo apt-get install libsqlite3-dev
-```
-Install MAVSDK if you haven't already, the latest releases can be found at https://github.com/mavlink/MAVSDK/releases
-```
-sudo dpkg -i libmavsdk-dev_2.4.1_debian12_arm64.deb
-```
-Or install MAVSDK from source
-```
-git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
-cd MAVSDK
-cmake -Bbuild/default -DCMAKE_BUILD_TYPE=Release -H.
-sudo cmake --build build/default -j$(nproc) --target install
-cd ..
+pip install pymavlink
 ```
 Upgrade OpenSSL if your version is less than 3.0.2
 ```
@@ -41,28 +36,24 @@ make
 ```
 
 ### Run
+Start the download backend and the uploader (both read the same config):
 ```bash
-./build/logloader | tee output.txt
+python3 logloader_download.py        # downloads .bin logs into logs/
+./build/logloader | tee output.txt   # uploads them
 ```
 
+`logloader_download.py`:
 ```
-Downloading...	2023-10-05T15:06:42Z	0.97249500MB	100%	3889.98000000 Kbps
-Downloading...	2023-10-05T15:06:58Z	0.46985700MB	98%	3686.40000000 Kbps
-Downloading...	2023-10-05T15:10:56Z0 Kb1.86199000MB	100%	4965.30666667 Kbps
-Downloading...	2023-10-07T08:52:14Z	0.38373500MB	100%	inf Kbps
-Downloading...	2023-10-07T08:56:18Z	0.26428000MB	100%	inf Kbps
-Downloading...	2023-10-07T09:04:18Z	0.42428500MB	100%	3394.28000000 Kbps
-Downloading...	2023-10-07T09:04:40Z	0.91263600MB	100%	7301.08800000 Kbps
-Downloading...	2023-10-07T09:05:20Z	1.33783000MB	100%	3567.54666667 Kbps
-Downloading...	2023-10-07T09:07:32Z	0.85526800MB	100%	3421.07200000 Kbps
-Downloading...	2023-10-07T09:22:00Z	0.82437500MB	100%	6595.00000000 Kbps
-Downloading...	2023-10-07T09:22:26Z	0.79509800MB	100%	6360.78400000 Kbps
-Downloading...	2023-10-07T09:26:10Z	0.88394300MB	100%	3535.77200000 Kbps
-Downloading...	2023-10-07T10:14:00Z	10.71558000MB	100%	2449.27542857 Kbps
-Downloading...	2023-10-07T12:03:40Z	0.64674900MB	100%	5173.99200000 Kbps
-Downloading...	2023-10-07T12:05:04Z	3.79014100MB	100%	3032.11280000 Kbps
-Downloading...	2023-10-07T12:14:46Z	2.24213400MB	100%	2989.51200000 Kbps
-Downloading...	2023-10-07T12:50:12Z	0.78112200MB	100%	3124.48800000 Kbps
+Connecting to udpin:0.0.0.0:14551
+Connected (system 1, component 1)
+3 log(s) on vehicle
+Downloading LOG0007 (1015808 bytes, 11287 chunks) -> LOG0007_2024-01-02T03:04:05Z.bin
+  done: LOG0007_2024-01-02T03:04:05Z.bin
+```
+
+`logloader`:
+```
+Log upload SUCCESS: Success: 127.0.0.1:5006/browse?log=...
 ```
 
 ### Install

@@ -1,9 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <sqlite3.h>
-#include <mavsdk/plugins/log_files/log_files.h>
 
 class ServerInterface
 {
@@ -15,6 +15,15 @@ public:
 		std::string db_path;         // Path to this server's database
 		bool upload_enabled {};
 		bool public_logs {};
+	};
+
+	// Minimal log description, decoupled from any MAVLink library. The pymavlink
+	// downloader writes log files into the logs directory; everything the uploader
+	// needs (id, date, size) is recovered from the on-disk filename + file size.
+	struct LogInfo {
+		uint32_t id {};
+		std::string date;
+		uint32_t size_bytes {};
 	};
 
 	struct UploadResult {
@@ -39,10 +48,12 @@ public:
 	void close_database();
 
 	// Log entry management
-	static std::string generate_uuid(const mavsdk::LogFiles::Entry& entry);
-	bool add_log_entry(const mavsdk::LogFiles::Entry& entry);
+	static std::string generate_uuid(const LogInfo& info);
+	bool add_log_entry(const LogInfo& info);
 	bool update_download_status(const std::string& uuid, bool downloaded);
-	uint32_t num_logs_to_download();
+
+	// Register a downloaded log file (parsed from its filename) as ready to upload.
+	bool register_log_file(const std::string& filepath);
 
 	// Upload management
 	uint32_t num_logs_to_upload();
@@ -51,9 +62,7 @@ public:
 
 	// Query methods
 	bool is_blacklisted(const std::string& uuid);
-	DatabaseEntry get_next_log_to_download();
 
-	std::string filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const ;
 	std::string filepath_from_uuid(const std::string& uuid) const;
 
 	void start();

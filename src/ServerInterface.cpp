@@ -69,11 +69,15 @@ void ServerInterface::stop()
 	_should_exit = true;
 }
 
-std::string ServerInterface::generate_uuid(const mavsdk::LogFiles::Entry& entry)
+std::string ServerInterface::generate_uuid(const LogInfo& info)
 {
-	// Create a unique identifier based on date and size
+	// Create a unique identifier from id, date, and size. ArduPilot often reports
+	// LOG_ENTRY.time_utc == 0 (no GPS time at log start), so the date can be empty
+	// or "unknown" and is not unique on its own; including the log id disambiguates.
+	// All three fields are recovered from the on-disk filename + file size, so the
+	// UUID computed at registration matches the one recomputed at upload time.
 	std::stringstream ss;
-	ss << entry.date << "_" << entry.size_bytes;
+	ss << info.id << "_" << info.date << "_" << info.size_bytes;
 
 	// Use a simple hash for the UUID
 	std::hash<std::string> hasher;
@@ -84,9 +88,9 @@ std::string ServerInterface::generate_uuid(const mavsdk::LogFiles::Entry& entry)
 	return ss.str();
 }
 
-bool ServerInterface::add_log_entry(const mavsdk::LogFiles::Entry& entry)
+bool ServerInterface::add_log_entry(const LogInfo& info)
 {
-	std::string uuid = generate_uuid(entry);
+	std::string uuid = generate_uuid(info);
 
 	// Check if the log already exists
 	sqlite3_stmt* stmt;
@@ -122,14 +126,45 @@ bool ServerInterface::add_log_entry(const mavsdk::LogFiles::Entry& entry)
 	}
 
 	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 2, entry.id);
-	sqlite3_bind_text(stmt, 3, entry.date.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 4, entry.size_bytes);
+	sqlite3_bind_int(stmt, 2, info.id);
+	sqlite3_bind_text(stmt, 3, info.date.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_int(stmt, 4, info.size_bytes);
 
 	bool success = sqlite3_step(stmt) == SQLITE_DONE;
 	sqlite3_finalize(stmt);
 
 	return success;
+}
+
+bool ServerInterface::register_log_file(const std::string& filepath)
+{
+	// Parse id and date from the filename (format LOG<id:04d>_<date>.bin) and mark the
+	// log as downloaded so the upload loop will pick it up. The UUID derived here matches
+	// the one upload_log() recomputes from the same filename. Idempotent: safe to call
+	// repeatedly as the logs directory is rescanned.
+	std::string filename = fs::path(filepath).filename().string();
+	size_t underscore_pos = filename.find('_');
+	size_t dot_pos = filename.find_last_of('.');
+
+	if (underscore_pos == std::string::npos || dot_pos == std::string::npos || underscore_pos < 3) {
+		return false;
+	}
+
+	LogInfo info;
+
+	try {
+		info.id = std::stoi(filename.substr(3, underscore_pos - 3)); // skip "LOG" prefix
+
+	} catch (const std::exception& e) {
+		LOG("Skipping unrecognized log filename: " << filename);
+		return false;
+	}
+
+	info.date = filename.substr(underscore_pos + 1, dot_pos - underscore_pos - 1);
+	info.size_bytes = fs::exists(filepath) ? fs::file_size(filepath) : 0;
+
+	add_log_entry(info); // no-op if already present
+	return update_download_status(generate_uuid(info), true);
 }
 
 bool ServerInterface::update_download_status(const std::string& uuid, bool downloaded)
@@ -219,7 +254,7 @@ ServerInterface::UploadResult ServerInterface::upload_log(const std::string& fil
 	std::string filename = fs::path(filepath).filename().string();
 	std::string uuid;
 
-	// Parse the ID and date from filename (assuming format like LOG0001_2023-04-15T12:34:56Z.ulg)
+	// Parse the ID and date from filename (assuming format like LOG0001_2023-04-15T12:34:56Z.bin)
 	size_t underscore_pos = filename.find('_');
 	size_t dot_pos = filename.find_last_of('.');
 
@@ -231,7 +266,7 @@ ServerInterface::UploadResult ServerInterface::upload_log(const std::string& fil
 		uint32_t size = fs::exists(filepath) ? fs::file_size(filepath) : 0;
 
 		// Create a log entry and generate UUID
-		mavsdk::LogFiles::Entry entry;
+		LogInfo entry;
 		entry.id = id;
 		entry.date = date_part;
 		entry.size_bytes = size;
@@ -308,61 +343,6 @@ bool ServerInterface::is_blacklisted(const std::string& uuid)
 	return blacklisted;
 }
 
-uint32_t ServerInterface::num_logs_to_download()
-{
-	sqlite3_stmt* stmt;
-	std::string query =
-		"SELECT COUNT(*) FROM logs "
-		"WHERE downloaded = 0";
-
-	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-		std::cerr << "SQL error preparing num_logs_to_download: " << sqlite3_errmsg(_db) << std::endl;
-		return 0;
-	}
-
-	uint32_t log_count = 0;
-
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		log_count = sqlite3_column_int(stmt, 0);
-	}
-
-	sqlite3_finalize(stmt);
-	return log_count;
-}
-
-ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_download()
-{
-	DatabaseEntry empty_entry;
-	empty_entry.uuid = ""; // Empty UUID indicates not found
-
-	sqlite3_stmt* stmt;
-	std::string query =
-		"SELECT uuid, id, date, size_bytes, downloaded, uploaded "
-		"FROM logs WHERE downloaded = 0 "
-		"ORDER BY date DESC, size_bytes DESC LIMIT 1";
-
-	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-		std::cerr << "SQL error preparing get_next_log_to_download: " << sqlite3_errmsg(_db) << std::endl;
-		return empty_entry;
-	}
-
-	DatabaseEntry entry = empty_entry;
-
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		entry = row_to_db_entry(stmt);
-	}
-
-	sqlite3_finalize(stmt);
-	return entry;
-}
-
-std::string ServerInterface::filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const
-{
-	std::ostringstream ss;
-	ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
-	return ss.str();
-}
-
 std::string ServerInterface::filepath_from_uuid(const std::string& uuid) const
 {
 	// Look up the log entry by UUID
@@ -386,7 +366,7 @@ std::string ServerInterface::filepath_from_uuid(const std::string& uuid) const
 		if (date_text != nullptr) {
 			std::string date = reinterpret_cast<const char*>(date_text);
 			std::ostringstream ss;
-			ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date << ".ulg";
+			ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date << ".bin";
 			filepath = ss.str();
 		}
 	}
