@@ -25,7 +25,7 @@ import os
 import signal
 import sys
 import time
-import tomllib
+import tomli
 from datetime import datetime, timezone
 
 from pymavlink import mavutil
@@ -370,8 +370,8 @@ def main():
     config_path = resolve_config_path(args.config)
     try:
         with open(config_path, "rb") as f:
-            config = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+            config = tomli.load(f)
+    except (OSError, tomli.TOMLDecodeError) as exc:
         log(f"Failed to read config {config_path}: {exc}")
         return 1
 
