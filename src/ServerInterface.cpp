@@ -356,10 +356,23 @@ ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_download()
 	return entry;
 }
 
+void ServerInterface::set_log_extension(const std::string& extension)
+{
+	std::lock_guard<std::mutex> lock(_log_extension_mutex);
+	_log_extension = extension;
+}
+
+std::string ServerInterface::log_extension() const
+{
+	std::lock_guard<std::mutex> lock(_log_extension_mutex);
+	return _log_extension;
+}
+
 std::string ServerInterface::filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const
 {
 	std::ostringstream ss;
-	ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
+	ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date <<
+	   log_extension();
 	return ss.str();
 }
 
@@ -386,8 +399,20 @@ std::string ServerInterface::filepath_from_uuid(const std::string& uuid) const
 		if (date_text != nullptr) {
 			std::string date = reinterpret_cast<const char*>(date_text);
 			std::ostringstream ss;
-			ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date << ".ulg";
-			filepath = ss.str();
+			ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date;
+			const std::string base = ss.str();
+
+			filepath = base + log_extension();
+
+			if (!fs::exists(filepath)) {
+				// Logs downloaded before the flight stack was known may carry another extension
+				for (const char* extension : {".ulg", ".BIN", ".bin"}) {
+					if (fs::exists(base + extension)) {
+						filepath = base + extension;
+						break;
+					}
+				}
+			}
 		}
 	}
 

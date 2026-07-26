@@ -60,7 +60,11 @@ int main(int argc, char** argv)
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
 		.application_directory = config["application_directory"].value_or(data_dir.string() + "/"),
 		.upload_enabled = config["upload_enabled"].value_or(false),
-		.public_logs = config["public_logs"].value_or(false)
+		.public_logs = config["public_logs"].value_or(false),
+		.download_protocol = config["download_protocol"].value_or("auto"),
+		.remote_log_directory = config["remote_log_directory"].value_or(""),
+		.log_extension = config["log_extension"].value_or(""),
+		.ftp_use_burst = config["ftp_use_burst"].value_or(true)
 	};
 
 	_log_loader = std::make_shared<LogLoader>(settings);

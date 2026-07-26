@@ -4,3 +4,24 @@ remote_server = "https://review.px4.io"
 email = ""
 upload_enabled = false
 public_logs = false
+
+# How to pull the log data off the vehicle.
+#   "auto"    - MAVLink FTP when the vehicle answers, LOG_DATA otherwise (default)
+#   "ftp"     - MAVLink FTP only, never fall back to LOG_DATA
+#   "mavlink" - the classic LOG_DATA protocol only
+#
+# FTP is preferred because FILE_TRANSFER_PROTOCOL is addressed to this system and
+# component, so mavlink-router sends the transfer to this endpoint only. LOG_DATA has no
+# target fields, which leaves a router no choice but to copy every chunk to every
+# endpoint it serves, telemetry radio included.
+download_protocol = "auto"
+
+# Remote log directory. Empty probes "/fs/microsd/log" (PX4) then "/APM/LOGS" (ArduPilot).
+remote_log_directory = ""
+
+# Extension for downloaded logs. Empty derives it from the flight stack, which needs FTP.
+# Set it to ".BIN" for ArduPilot when FTP is unavailable.
+log_extension = ""
+
+# FTP burst reads. Much faster, disable it if the flight stack's burst support misbehaves.
+ftp_use_burst = true

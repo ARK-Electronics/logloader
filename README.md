@@ -4,8 +4,46 @@ Downloads PX4 log files (.ulg) and uploads them to a local server and optionally
 
 The **config.toml** file is used to configure the program settings.
 
+Works with PX4 (`.ulg`) and ArduPilot (`.BIN`).
+
 ### Behavior
 Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database per server is used to track log file download/upload status.
+
+### Log transport
+The bulk transfer uses **MAVLink FTP** (`FILE_TRANSFER_PROTOCOL`, msg 110), not the classic log protocol (`LOG_DATA`, msg 120).
+
+`LOG_DATA` has no `target_system`/`target_component` fields, so a router in between — mavlink-router, for instance — has no addressing information to work with and copies every chunk to every endpoint it serves, telemetry radio included. `FILE_TRANSFER_PROTOCOL` is addressed, and both PX4 and ArduPilot send the reply back to the requesting sysid/compid, so the transfer is unicast to logloader and the other endpoints stay quiet. No router or autopilot configuration change is needed.
+
+The log *list* still comes from `LOG_ENTRY` (msg 118), which is also untargeted, but it is a handful of bytes per log rather than megabytes, and it is the only source of the timestamp the databases are keyed on.
+
+At startup logloader probes for the vehicle's log directory (`/fs/microsd/log` on PX4, `/APM/LOGS` on ArduPilot) and uses the result to pick the log file extension. Each downloaded file is size-checked against what `LOG_ENTRY` reported before it is moved into the logs directory; anything that does not line up is discarded and re-fetched over `LOG_DATA` instead.
+
+Requirements:
+- The autopilot's MAVLink instance must have FTP enabled (`mavlink start -x` on PX4).
+- If FTP is unavailable logloader falls back to `LOG_DATA` automatically. On ArduPilot without FTP, set `log_extension = ".BIN"` so downloaded files are named correctly.
+
+### ArduPilot notes
+ArduPilot needs FTP: MAVSDK's `LogFiles` plugin cannot enumerate its logs. The plugin assumes PX4's zero-based log ids — it discards any `LOG_ENTRY` whose id is not below `num_logs` and reads the collected entries back out at indices `0..num_logs-1` — while ArduPilot numbers list entries from one, so its final entry always trips that check and `get_entries()` returns `NoLogfiles`. When the FTP probe reports ArduPilot, logloader runs the `LOG_REQUEST_LIST` exchange itself (`LogEntryLister`) without assuming where the numbering starts.
+
+Mapping a list entry onto a file is also stack-specific. ArduPilot reports a *list entry number*, not the log number in the file name, and log numbers wrap at `LOG_MAX_FILES`. logloader reads `LASTLOG.TXT` over FTP and reproduces ArduPilot's own oldest-first ordering to resolve the two.
+
+`.BIN` files are not accepted by review.px4.io, so leave `upload_enabled = false` or point `remote_server` somewhere that understands dataflash logs.
+
+Set `download_protocol` in **config.toml** to `"mavlink"` to restore the old behavior, or `"ftp"` to never fall back.
+
+### Configuration
+| Key | Default | Description |
+| --- | --- | --- |
+| `connection_url` | `udp://:14551` | MAVSDK connection string |
+| `local_server` | `http://127.0.0.1:5006` | Local upload target |
+| `remote_server` | `https://review.px4.io` | Remote upload target |
+| `email` | `""` | Email attached to remote uploads |
+| `upload_enabled` | `false` | Upload to the remote server |
+| `public_logs` | `false` | Mark remote uploads public |
+| `download_protocol` | `"auto"` | `"auto"`, `"ftp"` or `"mavlink"` |
+| `remote_log_directory` | `""` | Override the vehicle log directory |
+| `log_extension` | `""` | Override the downloaded file extension |
+| `ftp_use_burst` | `true` | Use FTP burst reads |
 
 ### Build
 Install dependencies

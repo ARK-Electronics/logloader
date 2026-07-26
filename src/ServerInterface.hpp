@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
 #include <sqlite3.h>
@@ -56,6 +57,10 @@ public:
 	std::string filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const ;
 	std::string filepath_from_uuid(const std::string& uuid) const;
 
+	// ".ulg" for PX4, ".BIN" for ArduPilot. Set once the flight stack is known.
+	void set_log_extension(const std::string& extension);
+	std::string log_extension() const;
+
 	void start();
 	void stop();
 
@@ -78,4 +83,8 @@ private:
 	Protocol _protocol {Protocol::Https};
 	bool _should_exit = false;
 	sqlite3* _db = nullptr;
+
+	// Read by the upload thread while the download loop may still be setting it
+	mutable std::mutex _log_extension_mutex;
+	std::string _log_extension {".ulg"};
 };

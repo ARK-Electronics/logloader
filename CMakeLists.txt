@@ -33,6 +33,8 @@ include_directories(${SQLite3_INCLUDE_DIRS})
 add_executable(${PROJECT_NAME}
     src/main.cpp
     src/ServerInterface.cpp
+    src/FtpLogFetcher.cpp
+    src/LogEntryLister.cpp
     src/LogLoader.cpp)
 
 target_link_libraries(${PROJECT_NAME}

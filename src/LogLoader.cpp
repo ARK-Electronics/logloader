@@ -54,6 +54,14 @@ void LogLoader::stop()
 		_should_exit = true;
 	}
 	_exit_cv.notify_all();
+
+	if (_ftp_fetcher) {
+		_ftp_fetcher->stop();
+	}
+
+	if (_log_entry_lister) {
+		_log_entry_lister->stop();
+	}
 }
 
 bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
@@ -80,8 +88,58 @@ bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
 	// MAVSDK plugins
 	_log_files = std::make_shared<mavsdk::LogFiles>(system.value());
 	_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
+	_log_entry_lister = std::make_shared<LogEntryLister>(system.value());
+
+	setup_ftp_fetcher(system.value());
 
 	return true;
+}
+
+void LogLoader::setup_ftp_fetcher(std::shared_ptr<mavsdk::System> system)
+{
+	_ftp_fetcher.reset();
+
+	if (_settings.download_protocol == "mavlink") {
+		LOG("Using the MAVLink log protocol (LOG_DATA) as configured");
+
+	} else {
+		FtpLogFetcher::Settings ftp_settings = {
+			.temp_directory = _settings.application_directory + "tmp/",
+			.remote_directory = _settings.remote_log_directory,
+			.use_burst = _settings.ftp_use_burst,
+		};
+
+		auto fetcher = std::make_shared<FtpLogFetcher>(system, ftp_settings);
+
+		if (fetcher->detect()) {
+			_ftp_fetcher = fetcher;
+
+		} else if (_settings.download_protocol == "ftp") {
+			// Pinned to FTP, keep the fetcher around and let it retry as we run
+			LOG("download_protocol is \"ftp\" but the vehicle did not answer, will keep trying");
+			_ftp_fetcher = fetcher;
+		}
+	}
+
+	apply_log_extension();
+}
+
+void LogLoader::apply_log_extension()
+{
+	// The log protocol gives us no way to tell PX4 and ArduPilot apart, so an operator
+	// running ArduPilot without FTP has to name the extension in the config file.
+	std::string extension = _settings.log_extension;
+
+	if (extension.empty() && _ftp_fetcher && _ftp_fetcher->available()) {
+		extension = _ftp_fetcher->log_extension();
+	}
+
+	if (extension.empty()) {
+		extension = ".ulg";
+	}
+
+	_local_server->set_log_extension(extension);
+	_remote_server->set_log_extension(extension);
 }
 
 void LogLoader::run()
@@ -125,7 +183,12 @@ void LogLoader::run()
 		while (!_should_exit && num_remaining) {
 			// Download logs until we should exit or there are none left to download
 			LOG("Downloading log " << total_to_download - num_remaining + 1 << "/" << total_to_download);
-			download_next_log();
+
+			if (!download_next_log()) {
+				// Nothing was retired, so retrying right away would just spin
+				break;
+			}
+
 			num_remaining = _local_server->num_logs_to_download();
 		}
 
@@ -146,17 +209,25 @@ bool LogLoader::request_log_entries()
 
 	// Debug profiling code. We need to check how this performs with 100+ logs
 	auto request_start = std::chrono::high_resolution_clock::now();
-	auto entries_result = _log_files->get_entries();
 
-	//  Store log entries
-	_log_entries = entries_result.second;
+	bool success = false;
+
+	if (_ftp_fetcher && _ftp_fetcher->flavor() == FtpLogFetcher::Flavor::ArduPilot) {
+		// MAVSDK's LogFiles plugin cannot enumerate ArduPilot logs, see LogEntryLister
+		success = _log_entry_lister->get_entries(_log_entries);
+
+	} else {
+		auto entries_result = _log_files->get_entries();
+		_log_entries = entries_result.second;
+		success = entries_result.first == mavsdk::LogFiles::Result::Success;
+	}
 
 	auto request_end = std::chrono::high_resolution_clock::now();
 
 	std::chrono::duration<double> request_duration = request_end - request_start;
 	LOG_DEBUG("Received " << _log_entries.size() << "log entries in " << request_duration.count() << " seconds");
 
-	if (entries_result.first != mavsdk::LogFiles::Result::Success) {
+	if (!success) {
 		LOG("Error getting log entries");
 		return false;
 	}
@@ -175,16 +246,29 @@ bool LogLoader::request_log_entries()
 	LOG_DEBUG("Added log entries to databases in " << db_duration.count() << " seconds");
 	LOG_DEBUG("Total processing time: " << (request_duration + db_duration).count() << " seconds");
 
+	// Listing the remote directory costs a round trip per subdirectory, so only do it
+	// when there is actually something to fetch.
+	if (_ftp_fetcher && _local_server->num_logs_to_download()) {
+		if (_ftp_fetcher->refresh()) {
+			apply_log_extension();
+
+		} else {
+			LOG_DEBUG("Could not index the vehicle log directory over FTP");
+		}
+	}
+
 	return true;
 }
 
-void LogLoader::download_next_log()
+// Returns true when an entry was retired from the download queue, false when the caller
+// should back off instead of immediately trying again.
+bool LogLoader::download_next_log()
 {
 	// Get one undownloaded log, use the local server for query
 	ServerInterface::DatabaseEntry db_entry = _local_server->get_next_log_to_download();
 
 	if (db_entry.uuid.empty()) {
-		return;
+		return false;
 	}
 
 	// Find the corresponding log entry in the list from the vehicle
@@ -193,13 +277,15 @@ void LogLoader::download_next_log()
 		std::string uuid = ServerInterface::generate_uuid(entry);
 
 		if (uuid == db_entry.uuid) {
-			if (download_log(entry)) {
-				// Update downloaded status in both databases
-				_local_server->update_download_status(uuid, true);
-				_remote_server->update_download_status(uuid, true);
+			if (!download_log(entry)) {
+				return false;
 			}
 
-			return;
+			// Update downloaded status in both databases
+			_local_server->update_download_status(uuid, true);
+			_remote_server->update_download_status(uuid, true);
+
+			return true;
 		}
 	}
 
@@ -209,13 +295,11 @@ void LogLoader::download_next_log()
 	_local_server->update_download_status(db_entry.uuid, true);
 	_remote_server->update_download_status(db_entry.uuid, true);
 
-	return;
+	return true;
 }
 
 bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 {
-	auto prom = std::promise<mavsdk::LogFiles::Result> {};
-	auto future_result = prom.get_future();
 	auto download_path = _local_server->filepath_from_entry(entry);
 
 	// Check and delete file if it already exists. This can occur due to partial download.
@@ -230,6 +314,79 @@ bool LogLoader::download_log(const mavsdk::LogFiles::Entry& entry)
 			return false;
 		}
 	}
+
+	// Prefer MAVLink FTP. Unlike LOG_DATA it is addressed to us, so a router in between
+	// unicasts the transfer instead of copying every chunk to every endpoint it serves.
+	if (_ftp_fetcher && _ftp_fetcher->available()) {
+		if (download_log_ftp(entry, download_path)) {
+			return true;
+		}
+	}
+
+	if (_settings.download_protocol == "ftp") {
+		LOG("Could not fetch " << download_path << " over FTP and download_protocol is \"ftp\", not falling back");
+		return false;
+	}
+
+	return download_log_mavlink(entry, download_path);
+}
+
+bool LogLoader::download_log_ftp(const mavsdk::LogFiles::Entry& entry, const std::string& download_path)
+{
+	const std::string remote_path = _ftp_fetcher->resolve(entry);
+
+	if (remote_path.empty()) {
+		LOG_DEBUG("No remote path matches log " << entry.id << " (" << entry.date << ")");
+		return false;
+	}
+
+	LOG("Downloading " << download_path << " from " << remote_path);
+
+	auto time_start = std::chrono::steady_clock::now();
+
+	// Everything the callback touches is captured by value, MAVSDK may still hold it
+	// after we have stopped waiting on the transfer.
+	bool success = _ftp_fetcher->download(remote_path, download_path, entry.size_bytes,
+	[date = entry.date, size_bytes = entry.size_bytes, time_start](uint32_t bytes_transferred, uint32_t total_bytes) {
+#ifdef DEBUG_BUILD
+		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+					  std::chrono::steady_clock::now() - time_start).count();
+		double rate_kbps = elapsed_ms > 0 ? (bytes_transferred * 8.0) / elapsed_ms : 0.;
+		int percent = total_bytes > 0 ? int((100.0 * bytes_transferred) / total_bytes) : 0;
+
+		LOG_DEBUG("Downloading: "
+			  << std::setw(24) << std::left << date
+			  << std::setw(8) << std::fixed << std::setprecision(2) << size_bytes / 1e6 << "MB"
+			  << std::setw(6) << std::right << percent << "%"
+			  << std::setw(12) << std::fixed << std::setprecision(2) << rate_kbps << " Kbps"
+			  << std::flush);
+#else
+		(void)date;
+		(void)size_bytes;
+		(void)time_start;
+		(void)bytes_transferred;
+		(void)total_bytes;
+#endif
+	});
+
+	if (!success) {
+		// Let a later pass try this file again rather than stranding it
+		_ftp_fetcher->release(remote_path);
+		LOG("FTP download failed");
+		return false;
+	}
+
+	double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+				 std::chrono::steady_clock::now() - time_start).count() / 1000.;
+	LOG("Finished in " << std::setprecision(2) << seconds << " seconds");
+
+	return true;
+}
+
+bool LogLoader::download_log_mavlink(const mavsdk::LogFiles::Entry& entry, const std::string& download_path)
+{
+	auto prom = std::promise<mavsdk::LogFiles::Result> {};
+	auto future_result = prom.get_future();
 
 	LOG("Downloading " << download_path);
 
