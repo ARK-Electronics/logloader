@@ -27,6 +27,7 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 		.db_path = _settings.application_directory + "local_server.db",
 		.upload_enabled = true, // Always upload to local server
 		.public_logs = true, // Public required true for searching using Web UI
+		.api_key = "", // Local Flight Review is typically open on the companion
 	};
 
 	// Setup remote server interface
@@ -37,6 +38,7 @@ LogLoader::LogLoader(const LogLoader::Settings& settings)
 		.db_path = _settings.application_directory + "remote_server.db",
 		.upload_enabled = settings.upload_enabled,
 		.public_logs = settings.public_logs,
+		.api_key = settings.remote_api_key,
 	};
 
 	_local_server = std::make_shared<ServerInterface>(local_server_settings);
@@ -501,8 +503,14 @@ void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 		if (result.success) {
 			LOG("Log upload SUCCESS: " << result.message);
 
-		} else if (result.status_code == 400) {
-			LOG("Log upload failed (" << result.status_code << "): " << result.message);
+		} else if (result.status_code == 400 || result.status_code == 401 || result.status_code == 403) {
+			LOG("Log upload rejected (" << result.status_code << "): " << result.message);
+
+			// Account/auth policy applies to every log on this server — stop the batch.
+			if (result.status_code == 401 || result.status_code == 403) {
+				LOG("Stopping remote uploads for this cycle (server requires login/approval)");
+				return;
+			}
 
 		} else if (result.status_code == 503) {
 			// Server down (e.g. local flight-review not running). Already logged once
@@ -512,6 +520,8 @@ void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 		} else {
 			LOG("Log upload TEMPORARILY FAILED (" << result.status_code << "): "
 			    << result.message << " - Will retry later");
+			// Don't tight-loop on transient errors for the same file.
+			return;
 		}
 	}
 }

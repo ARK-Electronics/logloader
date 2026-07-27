@@ -278,9 +278,9 @@ ServerInterface::UploadResult ServerInterface::upload_log(const std::string& fil
 			sqlite3_finalize(stmt);
 		}
 
-	} else if (result.status_code == 400) {
-		// Permanent failure - add to blacklist
-		add_to_blacklist(uuid, "HTTP 400: Bad Request");
+	} else if (result.status_code == 400 || result.status_code == 401 || result.status_code == 403) {
+		// Permanent failure - do not keep retrying the same file
+		add_to_blacklist(uuid, "HTTP " + std::to_string(result.status_code) + ": " + result.message);
 	}
 
 	return result;
@@ -465,25 +465,63 @@ ServerInterface::UploadResult ServerInterface::upload(const std::string& filepat
 	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 	items.push_back({"filearg", content, filepath, "application/octet-stream"});
 
-	LOG("Uploading " << fs::path(filepath).filename().string() << " to " << _settings.server_url);
+	// API-key headers only when a non-empty key is configured. Never send
+	// Authorization/X-API-Key with an empty value.
+	httplib::Headers headers;
+	const bool use_api_key = !_settings.api_key.empty();
+
+	if (use_api_key) {
+		// ARK Flight Review (flight_review api_key.py):
+		//   Authorization: Bearer <key>
+		//   X-API-Key: <key>
+		// (Query ?api_key= also works server-side; form fields cannot — auth
+		// runs in prepare() before the body is available.)
+		headers.emplace("Authorization", "Bearer " + _settings.api_key);
+		headers.emplace("X-API-Key", _settings.api_key);
+	}
+
+	LOG("Uploading " << fs::path(filepath).filename().string() << " to " << _settings.server_url
+	    << (use_api_key ? " (with API key)" : ""));
 
 	// Post multi-part form
 	httplib::Result res;
 
 	if (_protocol == Protocol::Https) {
 		httplib::SSLClient cli(_settings.server_url);
-		res = cli.Post("/upload", items);
+		cli.set_connection_timeout(30, 0);
+		cli.set_read_timeout(120, 0);
+		res = use_api_key ? cli.Post("/upload", headers, items)
+		      : cli.Post("/upload", items);
 
 	} else {
 		httplib::Client cli(_settings.server_url);
-		res = cli.Post("/upload", items);
+		cli.set_connection_timeout(30, 0);
+		cli.set_read_timeout(120, 0);
+		res = use_api_key ? cli.Post("/upload", headers, items)
+		      : cli.Post("/upload", items);
 	}
 
 	if (res && res->status == 302) {
 		return {true, 302, "Success: " + _settings.server_url + res->get_header_value("Location")};
 
-	} else if (res && res->status == 400) {
-		return {false, 400, "Bad Request - Will not retry"};
+	} else if (res && (res->status == 400 || res->status == 401 || res->status == 403)) {
+		// Permanent client/auth errors: do not spin on the same log forever.
+		// review.arkelectron.com returns 403 when the account is not logged in /
+		// not approved for automated uploads.
+		std::string detail = res->body;
+		// Collapse HTML / whitespace for a one-line log message.
+		for (char& c : detail) {
+			if (c == '\n' || c == '\r' || c == '\t') {
+				c = ' ';
+			}
+		}
+
+		if (detail.size() > 200) {
+			detail.resize(200);
+			detail += "...";
+		}
+
+		return {false, res->status, detail.empty() ? "Rejected by server (will not retry)" : detail};
 
 	} else {
 		return {false, res ? res->status : 0, "Will retry later"};
@@ -503,18 +541,24 @@ bool ServerInterface::server_reachable()
 
 	if (_protocol == Protocol::Https) {
 		httplib::SSLClient cli(_settings.server_url);
-		cli.set_connection_timeout(2, 0);
-		cli.set_read_timeout(2, 0);
+		cli.set_connection_timeout(5, 0);
+		cli.set_read_timeout(5, 0);
+		// Flight Review often redirects "/" (302). We only need proof the host answers.
+		cli.set_follow_location(false);
 		res = cli.Get("/");
 
 	} else {
 		httplib::Client cli(_settings.server_url);
-		cli.set_connection_timeout(2, 0);
-		cli.set_read_timeout(2, 0);
+		cli.set_connection_timeout(5, 0);
+		cli.set_read_timeout(5, 0);
+		cli.set_follow_location(false);
 		res = cli.Get("/");
 	}
 
-	const bool success = res && res->status == 200;
+	// Any HTTP response means the server is up. Flight Review's home page returns
+	// 302, so requiring status == 200 falsely marked review.arkelectron.com dead.
+	// Connection / TLS failures leave res empty.
+	const bool success = static_cast<bool>(res);
 
 	if (!success) {
 		_unreachable_until = now + kUnreachableCooldown;

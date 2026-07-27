@@ -38,6 +38,7 @@ Set `download_protocol` in **config.toml** to `"mavlink"` to restore the old beh
 | `local_server` | `http://127.0.0.1:5006` | Local upload target |
 | `remote_server` | `https://review.px4.io` | Remote upload target |
 | `email` | `""` | Email attached to remote uploads |
+| `remote_api_key` | `""` | Per-account API key for authenticated Flight Review (`Authorization: Bearer` + `X-API-Key`). Empty = upload without API key headers (open servers). Generate under /account |
 | `upload_enabled` | `false` | Upload to the remote server |
 | `public_logs` | `false` | Mark remote uploads public |
 | `download_protocol` | `"auto"` | `"auto"`, `"ftp"` or `"mavlink"` |

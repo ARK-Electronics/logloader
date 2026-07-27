@@ -57,6 +57,7 @@ int main(int argc, char** argv)
 		.email = config["email"].value_or(""),
 		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
 		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
+		.remote_api_key = config["remote_api_key"].value_or(""),
 		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
 		.application_directory = config["application_directory"].value_or(data_dir.string() + "/"),
 		.upload_enabled = config["upload_enabled"].value_or(false),
@@ -66,6 +67,27 @@ int main(int argc, char** argv)
 		.log_extension = config["log_extension"].value_or(""),
 		.ftp_use_burst = config["ftp_use_burst"].value_or(true)
 	};
+
+	// Trim whitespace-only keys so they count as "not set" (no empty auth headers).
+	auto trim = [](std::string s) {
+		const auto start = s.find_first_not_of(" \t\r\n");
+
+		if (start == std::string::npos) {
+			return std::string{};
+		}
+
+		const auto end = s.find_last_not_of(" \t\r\n");
+		return s.substr(start, end - start + 1);
+	};
+	settings.remote_api_key = trim(std::move(settings.remote_api_key));
+
+	// Still attempt remote uploads without a key (open servers like logs.px4.io).
+	// Authenticated ARK Flight Review will 403 until remote_api_key is set; we
+	// never send empty Authorization / X-API-Key headers (see ServerInterface).
+	if (settings.upload_enabled && settings.remote_api_key.empty()) {
+		LOG("upload_enabled is true but remote_api_key is empty — remote uploads will "
+		    "proceed without an API key (open servers only; ARK Flight Review needs a key)");
+	}
 
 	_log_loader = std::make_shared<LogLoader>(settings);
 
