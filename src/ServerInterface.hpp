@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -20,7 +21,9 @@ public:
 
 	struct UploadResult {
 		bool success;
-		int status_code;    // HTTP status code, or 0 if not applicable
+		// HTTP status, or 0 when not applicable. 503 means the server is unreachable
+		// (connectivity); callers should stop the current upload batch and retry later.
+		int status_code;
 		std::string message;
 	};
 
@@ -87,4 +90,11 @@ private:
 	// Read by the upload thread while the download loop may still be setting it
 	mutable std::mutex _log_extension_mutex;
 	std::string _log_extension {".ulg"};
+
+	// When flight-review (or any upload target) is down, avoid probing and logging
+	// once per pending log. Probe at most every kUnreachableCooldown, and log only on
+	// the down/up transitions.
+	static constexpr auto kUnreachableCooldown = std::chrono::seconds(60);
+	std::chrono::steady_clock::time_point _unreachable_until {};
+	bool _reported_unreachable {false};
 };

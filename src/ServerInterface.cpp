@@ -438,7 +438,9 @@ ServerInterface::UploadResult ServerInterface::upload(const std::string& filepat
 	}
 
 	if (!server_reachable()) {
-		return {false, 0, "Server unreachable: " + _settings.server_url};
+		// 503: treat as service unavailable so the upload loop can bail the batch
+		// instead of hammering a dead local flight-review for every pending log.
+		return {false, 503, "Server unreachable: " + _settings.server_url};
 	}
 
 	std::ifstream file(filepath, std::ios::binary);
@@ -490,24 +492,52 @@ ServerInterface::UploadResult ServerInterface::upload(const std::string& filepat
 
 bool ServerInterface::server_reachable()
 {
+	const auto now = std::chrono::steady_clock::now();
+
+	// Still inside the cooldown from a previous failure — do not re-probe or re-log.
+	if (now < _unreachable_until) {
+		return false;
+	}
+
 	httplib::Result res;
 
 	if (_protocol == Protocol::Https) {
 		httplib::SSLClient cli(_settings.server_url);
+		cli.set_connection_timeout(2, 0);
+		cli.set_read_timeout(2, 0);
 		res = cli.Get("/");
 
 	} else {
 		httplib::Client cli(_settings.server_url);
+		cli.set_connection_timeout(2, 0);
+		cli.set_read_timeout(2, 0);
 		res = cli.Get("/");
 	}
 
-	bool success = res && res->status == 200;
+	const bool success = res && res->status == 200;
 
 	if (!success) {
-		LOG("Connection to " << _settings.server_url << " failed: " << (res ? std::to_string(res->status) : "No response"));
+		_unreachable_until = now + kUnreachableCooldown;
+
+		if (!_reported_unreachable) {
+			const std::string detail = res ? ("HTTP " + std::to_string(res->status)) : "No response";
+			LOG("Upload server " << _settings.server_url << " unreachable (" << detail
+			    << "); skipping uploads for "
+			    << std::chrono::duration_cast<std::chrono::seconds>(kUnreachableCooldown).count()
+			    << "s");
+			_reported_unreachable = true;
+		}
+
+		return false;
 	}
 
-	return success;
+	if (_reported_unreachable) {
+		LOG("Upload server " << _settings.server_url << " is reachable again");
+		_reported_unreachable = false;
+	}
+
+	_unreachable_until = {};
+	return true;
 }
 
 bool ServerInterface::init_database()
