@@ -16,6 +16,8 @@ public:
 		std::string email;
 		std::string local_server;
 		std::string remote_server;
+		// API key for remote_server (ARK Flight Review account key). Empty = none.
+		std::string remote_api_key;
 		std::string mavsdk_connection_url;
 		std::string application_directory;
 		bool upload_enabled;

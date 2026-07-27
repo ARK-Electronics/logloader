@@ -5,6 +5,13 @@ email = ""
 upload_enabled = false
 public_logs = false
 
+# Per-account API key for authenticated Flight Review (ARK).
+# Generate at https://review.arkelectron.com/account (shown once; format fr_...).
+# When set: sent as Authorization: Bearer and X-API-Key on POST /upload.
+# When empty: remote uploads are still attempted without API key headers
+# (works for open servers; ARK Flight Review will reject with 403).
+remote_api_key = ""
+
 # Vehicle log directory. Empty probes "@MAV_LOG" (the virtual log directory from
 # the MAVLink FTP specification), then "/fs/microsd/log" (PX4) and "/APM/LOGS"
 # (ArduPilot). Set this when the logs live somewhere else.

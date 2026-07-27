@@ -21,8 +21,23 @@ Log timestamps come from the modification time in the listing when the vehicle s
 
 Downloads are staged in a temporary directory and only moved next to the finished logs once the transferred size matches the listing, so a partial file is never mistaken for a complete one.
 
+`.BIN` files are not accepted by review.px4.io, so on ArduPilot leave `upload_enabled = false` or point `remote_server` somewhere that understands dataflash logs.
+
 ### Upgrading from a pre-FTP logloader
 Older versions identified logs by the timestamp `LOG_ENTRY` reported, which MAVLink FTP cannot reproduce. On first start the existing `logs` table is renamed to `logs_legacy` and its rows are matched against the FTP listing by size, so logs already downloaded and uploaded are not fetched or uploaded a second time. Nothing is deleted; `logs_legacy` stays behind for inspection.
+
+### Configuration
+| Key | Default | Description |
+| --- | --- | --- |
+| `connection_url` | `udp://:14551` | MAVSDK connection string |
+| `local_server` | `http://127.0.0.1:5006` | Local upload target |
+| `remote_server` | `https://review.px4.io` | Remote upload target |
+| `email` | `""` | Email attached to remote uploads |
+| `remote_api_key` | `""` | Per-account API key for authenticated Flight Review (`Authorization: Bearer` + `X-API-Key`). Empty = upload without API key headers (open servers). Generate under /account |
+| `upload_enabled` | `false` | Upload to the remote server |
+| `public_logs` | `false` | Mark remote uploads public |
+| `remote_log_directory` | `""` | Override the vehicle log directory |
+| `ftp_use_burst` | `true` | Use FTP burst reads |
 
 ### Build
 Install dependencies
