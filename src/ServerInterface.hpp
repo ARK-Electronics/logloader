@@ -16,6 +16,12 @@ public:
 		std::string db_path;         // Path to this server's database
 		bool upload_enabled {};
 		bool public_logs {};
+		// Per-account API key for authenticated Flight Review instances
+		// (e.g. review.arkelectron.com). Sent as:
+		//   Authorization: Bearer <key>
+		//   X-API-Key: <key>
+		// Matches ARK flight_review api_key.py. Leave empty for open servers.
+		std::string api_key;
 	};
 
 	struct UploadResult {
