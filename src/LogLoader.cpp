@@ -408,6 +408,11 @@ void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
 		} else if (result.status_code == 400) {
 			LOG("Log upload failed (" << result.status_code << "): " << result.message);
 
+		} else if (result.status_code == 503) {
+			// Server down (e.g. local flight-review not running). Already logged once
+			// with a cooldown in ServerInterface; do not walk the rest of the queue.
+			return;
+
 		} else {
 			LOG("Log upload TEMPORARILY FAILED (" << result.status_code << "): "
 			    << result.message << " - Will retry later");
