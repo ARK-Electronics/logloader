@@ -2,10 +2,11 @@
 
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
-#include <mavsdk/plugins/log_files/log_files.h>
 #include <mavsdk/log_callback.h>
 #include <condition_variable>
+#include <map>
 
+#include "FtpLogFetcher.hpp"
 #include "ServerInterface.hpp"
 
 class LogLoader
@@ -19,6 +20,8 @@ public:
 		std::string application_directory;
 		bool upload_enabled;
 		bool public_logs;
+		std::string remote_log_directory; // Empty probes the known locations
+		bool ftp_use_burst;
 	};
 
 	LogLoader(const Settings& settings);
@@ -29,13 +32,18 @@ public:
 
 private:
 	// Download
-	bool request_log_entries();
-	void download_next_log();
-	bool download_log(const mavsdk::LogFiles::Entry& entry);
+	bool refresh_log_index();
+	void download_pending_logs();
+	bool download_log(const ServerInterface::DatabaseEntry& db_entry, const FtpLogFetcher::RemoteLog& log);
+	const FtpLogFetcher::RemoteLog* find_remote_log(const ServerInterface::DatabaseEntry& db_entry) const;
+	std::string local_path_for(const ServerInterface::DatabaseEntry& db_entry);
 
 	// Upload
 	void upload_logs_thread();
 	void upload_pending_logs(std::shared_ptr<ServerInterface> server);
+
+	// Returns true if we should exit
+	bool wait_for(std::chrono::seconds duration);
 
 	Settings _settings;
 	std::string _logs_directory;
@@ -46,11 +54,14 @@ private:
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;
-	std::shared_ptr<mavsdk::LogFiles> _log_files;
-	std::vector<mavsdk::LogFiles::Entry> _log_entries;
+	std::shared_ptr<FtpLogFetcher> _ftp_fetcher;
+
+	// Consecutive download failures per log. A file the vehicle will not part
+	// with (a very large one that keeps timing out, say) is retried last so it
+	// cannot hold up everything behind it.
+	std::map<std::string, int> _download_failures;
 
 	std::atomic<bool> _should_exit = false;
-	std::atomic<bool> _download_cancelled = false;
 
 	std::condition_variable _exit_cv;
 	std::mutex _exit_cv_mutex;

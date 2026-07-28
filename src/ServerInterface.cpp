@@ -7,12 +7,33 @@
 #include <chrono>
 #include <ctime>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <functional>
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
 
 namespace fs = std::filesystem;
+
+namespace
+{
+
+std::optional<int64_t> parse_iso8601_utc(const std::string& text)
+{
+	std::tm tm {};
+
+	if (sscanf(text.c_str(), "%4d-%2d-%2dT%2d:%2d:%2dZ",
+		   &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
+		return std::nullopt;
+	}
+
+	tm.tm_year -= 1900;
+	tm.tm_mon -= 1;
+
+	return static_cast<int64_t>(timegm(&tm));
+}
+
+} // namespace
 
 ServerInterface::ServerInterface(const ServerInterface::Settings& settings)
 	: _settings(settings)
@@ -69,11 +90,11 @@ void ServerInterface::stop()
 	_should_exit = true;
 }
 
-std::string ServerInterface::generate_uuid(const mavsdk::LogFiles::Entry& entry)
+std::string ServerInterface::generate_uuid(const std::string& remote_path, uint32_t size_bytes)
 {
-	// Create a unique identifier based on date and size
+	// Create a unique identifier based on the remote path and size
 	std::stringstream ss;
-	ss << entry.date << "_" << entry.size_bytes;
+	ss << remote_path << "_" << size_bytes;
 
 	// Use a simple hash for the UUID
 	std::hash<std::string> hasher;
@@ -84,20 +105,18 @@ std::string ServerInterface::generate_uuid(const mavsdk::LogFiles::Entry& entry)
 	return ss.str();
 }
 
-bool ServerInterface::add_log_entry(const mavsdk::LogFiles::Entry& entry)
+bool ServerInterface::sync_log(const LogEntry& entry)
 {
-	std::string uuid = generate_uuid(entry);
-
 	// Check if the log already exists
 	sqlite3_stmt* stmt;
 	std::string check_query = "SELECT COUNT(*) FROM logs WHERE uuid = ?";
 
 	if (sqlite3_prepare_v2(_db, check_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-		std::cerr << "SQL error preparing add_log_entry check: " << sqlite3_errmsg(_db) << std::endl;
+		std::cerr << "SQL error preparing sync_log check: " << sqlite3_errmsg(_db) << std::endl;
 		return false;
 	}
 
-	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 1, entry.uuid.c_str(), -1, SQLITE_STATIC);
 
 	bool exists = false;
 
@@ -113,28 +132,32 @@ bool ServerInterface::add_log_entry(const mavsdk::LogFiles::Entry& entry)
 
 	// Insert the log
 	std::string insert_query =
-		"INSERT INTO logs (uuid, id, date, size_bytes, downloaded, uploaded) "
-		"VALUES (?, ?, ?, ?, 0, 0)";
+		"INSERT INTO logs (uuid, remote_path, date, size_bytes, local_path, downloaded, uploaded) "
+		"VALUES (?, ?, ?, ?, '', 0, 0)";
 
 	if (sqlite3_prepare_v2(_db, insert_query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-		std::cerr << "SQL error preparing add_log_entry insert: " << sqlite3_errmsg(_db) << std::endl;
+		std::cerr << "SQL error preparing sync_log insert: " << sqlite3_errmsg(_db) << std::endl;
 		return false;
 	}
 
-	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 2, entry.id);
+	sqlite3_bind_text(stmt, 1, entry.uuid.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, entry.remote_path.c_str(), -1, SQLITE_STATIC);
 	sqlite3_bind_text(stmt, 3, entry.date.c_str(), -1, SQLITE_STATIC);
-	sqlite3_bind_int(stmt, 4, entry.size_bytes);
+	sqlite3_bind_int64(stmt, 4, entry.size_bytes);
 
 	bool success = sqlite3_step(stmt) == SQLITE_DONE;
 	sqlite3_finalize(stmt);
 
+	if (success) {
+		grandfather_from_legacy(entry);
+	}
+
 	return success;
 }
 
-bool ServerInterface::update_download_status(const std::string& uuid, bool downloaded)
+bool ServerInterface::update_download_status(const std::string& uuid, const std::string& local_path, bool downloaded)
 {
-	std::string query = "UPDATE logs SET downloaded = ? WHERE uuid = ?";
+	std::string query = "UPDATE logs SET downloaded = ?, local_path = ? WHERE uuid = ?";
 	sqlite3_stmt* stmt;
 
 	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
@@ -143,12 +166,50 @@ bool ServerInterface::update_download_status(const std::string& uuid, bool downl
 	}
 
 	sqlite3_bind_int(stmt, 1, downloaded ? 1 : 0);
-	sqlite3_bind_text(stmt, 2, uuid.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, local_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 3, uuid.c_str(), -1, SQLITE_STATIC);
 
 	bool success = sqlite3_step(stmt) == SQLITE_DONE;
 	sqlite3_finalize(stmt);
 
 	return success;
+}
+
+bool ServerInterface::delete_log(const std::string& uuid)
+{
+	std::string query = "DELETE FROM logs WHERE uuid = ?";
+	sqlite3_stmt* stmt;
+
+	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing delete_log: " << sqlite3_errmsg(_db) << std::endl;
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
+
+	bool success = sqlite3_step(stmt) == SQLITE_DONE;
+	sqlite3_finalize(stmt);
+
+	return success;
+}
+
+bool ServerInterface::local_path_in_use(const std::string& local_path, const std::string& excluding_uuid)
+{
+	std::string query = "SELECT COUNT(*) FROM logs WHERE local_path = ? AND uuid != ?";
+	sqlite3_stmt* stmt;
+
+	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+		std::cerr << "SQL error preparing local_path_in_use: " << sqlite3_errmsg(_db) << std::endl;
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, local_path.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, excluding_uuid.c_str(), -1, SQLITE_STATIC);
+
+	bool in_use = sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0;
+	sqlite3_finalize(stmt);
+
+	return in_use;
 }
 
 uint32_t ServerInterface::num_logs_to_upload()
@@ -160,7 +221,7 @@ uint32_t ServerInterface::num_logs_to_upload()
 	sqlite3_stmt* stmt;
 	std::string query =
 		"SELECT COUNT(*) FROM logs "
-		"WHERE downloaded = 1 AND uploaded = 0 "
+		"WHERE downloaded = 1 AND uploaded = 0 AND local_path != '' "
 		"AND uuid NOT IN (SELECT uuid FROM blacklist)";
 
 	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
@@ -189,8 +250,8 @@ ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_upload()
 
 	sqlite3_stmt* stmt;
 	std::string query =
-		"SELECT uuid, id, date, size_bytes, downloaded, uploaded FROM logs "
-		"WHERE downloaded = 1 AND uploaded = 0 "
+		"SELECT uuid, remote_path, date, size_bytes, local_path, downloaded FROM logs "
+		"WHERE downloaded = 1 AND uploaded = 0 AND local_path != '' "
 		"AND uuid NOT IN (SELECT uuid FROM blacklist) "
 		"ORDER BY date DESC, size_bytes DESC LIMIT 1";
 
@@ -209,54 +270,14 @@ ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_upload()
 	return entry;
 }
 
-ServerInterface::UploadResult ServerInterface::upload_log(const std::string& filepath)
+ServerInterface::UploadResult ServerInterface::upload_log(const std::string& uuid, const std::string& filepath)
 {
 	if (!_settings.upload_enabled || _should_exit) {
 		return {false, 0, "Upload disabled or shutting down"};
 	}
 
-	// Extract UUID from filename
-	std::string filename = fs::path(filepath).filename().string();
-	std::string uuid;
-
-	// Parse the ID and date from filename (assuming format like LOG0001_2023-04-15T12:34:56Z.ulg)
-	size_t underscore_pos = filename.find('_');
-	size_t dot_pos = filename.find_last_of('.');
-
-	if (underscore_pos != std::string::npos && dot_pos != std::string::npos) {
-		std::string id_part = filename.substr(3, underscore_pos - 3); // Skip "LOG" prefix
-		std::string date_part = filename.substr(underscore_pos + 1, dot_pos - underscore_pos - 1);
-
-		uint32_t id = std::stoi(id_part);
-		uint32_t size = fs::exists(filepath) ? fs::file_size(filepath) : 0;
-
-		// Create a log entry and generate UUID
-		mavsdk::LogFiles::Entry entry;
-		entry.id = id;
-		entry.date = date_part;
-		entry.size_bytes = size;
-
-		uuid = generate_uuid(entry);
-
-		// Add to database if not already there
-		sqlite3_stmt* stmt;
-		std::string check_query = "SELECT COUNT(*) FROM logs WHERE uuid = ?";
-
-		if (sqlite3_prepare_v2(_db, check_query.c_str(), -1, &stmt, nullptr) == SQLITE_OK) {
-			sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_STATIC);
-
-			if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) == 0) {
-				// Log doesn't exist, add it
-				add_log_entry(entry);
-				update_download_status(uuid, true); // Mark as downloaded since we have the file
-			}
-
-			sqlite3_finalize(stmt);
-		}
-	}
-
 	if (uuid.empty()) {
-		return {false, 0, "Could not determine UUID from filename"};
+		return {false, 0, "Missing UUID"};
 	}
 
 	// Check if already blacklisted
@@ -330,45 +351,33 @@ uint32_t ServerInterface::num_logs_to_download()
 	return log_count;
 }
 
-ServerInterface::DatabaseEntry ServerInterface::get_next_log_to_download()
+std::vector<ServerInterface::DatabaseEntry> ServerInterface::get_logs_to_download()
 {
-	DatabaseEntry empty_entry;
-	empty_entry.uuid = ""; // Empty UUID indicates not found
+	std::vector<DatabaseEntry> entries;
 
 	sqlite3_stmt* stmt;
 	std::string query =
-		"SELECT uuid, id, date, size_bytes, downloaded, uploaded "
+		"SELECT uuid, remote_path, date, size_bytes, local_path, downloaded "
 		"FROM logs WHERE downloaded = 0 "
-		"ORDER BY date DESC, size_bytes DESC LIMIT 1";
+		"ORDER BY date DESC, remote_path DESC";
 
 	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
-		std::cerr << "SQL error preparing get_next_log_to_download: " << sqlite3_errmsg(_db) << std::endl;
-		return empty_entry;
+		std::cerr << "SQL error preparing get_logs_to_download: " << sqlite3_errmsg(_db) << std::endl;
+		return entries;
 	}
 
-	DatabaseEntry entry = empty_entry;
-
-	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		entry = row_to_db_entry(stmt);
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		entries.push_back(row_to_db_entry(stmt));
 	}
 
 	sqlite3_finalize(stmt);
-	return entry;
-}
-
-std::string ServerInterface::filepath_from_entry(const mavsdk::LogFiles::Entry& entry) const
-{
-	std::ostringstream ss;
-	ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << entry.id << "_" << entry.date << ".ulg";
-	return ss.str();
+	return entries;
 }
 
 std::string ServerInterface::filepath_from_uuid(const std::string& uuid) const
 {
-	// Look up the log entry by UUID
 	sqlite3_stmt* stmt;
-	std::string query =
-		"SELECT id, date FROM logs WHERE uuid = ?";
+	std::string query = "SELECT local_path FROM logs WHERE uuid = ?";
 
 	if (sqlite3_prepare_v2(_db, query.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
 		std::cerr << "SQL error preparing filepath_from_uuid: " << sqlite3_errmsg(_db) << std::endl;
@@ -380,14 +389,10 @@ std::string ServerInterface::filepath_from_uuid(const std::string& uuid) const
 	std::string filepath;
 
 	if (sqlite3_step(stmt) == SQLITE_ROW) {
-		int id = sqlite3_column_int(stmt, 0);
-		const unsigned char* date_text = sqlite3_column_text(stmt, 1);
+		const unsigned char* path_text = sqlite3_column_text(stmt, 0);
 
-		if (date_text != nullptr) {
-			std::string date = reinterpret_cast<const char*>(date_text);
-			std::ostringstream ss;
-			ss << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4) << id << "_" << date << ".ulg";
-			filepath = ss.str();
+		if (path_text != nullptr) {
+			filepath = reinterpret_cast<const char*>(path_text);
 		}
 	}
 
@@ -496,13 +501,16 @@ bool ServerInterface::init_database()
 		return false;
 	}
 
+	migrate_legacy_schema();
+
 	// Create logs table
 	const char* create_logs_table =
 		"CREATE TABLE IF NOT EXISTS logs ("
 		"  uuid TEXT PRIMARY KEY,"  // UUID of the log
-		"  id INTEGER,"             // Original log ID
-		"  date TEXT,"              // ISO8601 date from log
+		"  remote_path TEXT,"       // Path relative to the vehicle log root
+		"  date TEXT,"              // ISO8601 date, empty when unknown
 		"  size_bytes INTEGER,"     // Size in bytes
+		"  local_path TEXT DEFAULT '',"   // Where the download ended up
 		"  downloaded INTEGER DEFAULT 0," // Has it been downloaded
 		"  uploaded INTEGER DEFAULT 0"   // Has it been uploaded
 		");";
@@ -517,6 +525,187 @@ bool ServerInterface::init_database()
 
 	bool success = execute_query(create_logs_table) && execute_query(create_blacklist_table);
 	return success;
+}
+
+bool ServerInterface::table_exists(const std::string& name) const
+{
+	sqlite3_stmt* stmt;
+	const char* query = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?";
+
+	if (sqlite3_prepare_v2(_db, query, -1, &stmt, nullptr) != SQLITE_OK) {
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_STATIC);
+
+	bool exists = sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0;
+	sqlite3_finalize(stmt);
+
+	return exists;
+}
+
+bool ServerInterface::column_exists(const std::string& table, const std::string& column) const
+{
+	sqlite3_stmt* stmt;
+	const char* query = "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?";
+
+	if (sqlite3_prepare_v2(_db, query, -1, &stmt, nullptr) != SQLITE_OK) {
+		return false;
+	}
+
+	sqlite3_bind_text(stmt, 1, table.c_str(), -1, SQLITE_STATIC);
+	sqlite3_bind_text(stmt, 2, column.c_str(), -1, SQLITE_STATIC);
+
+	bool exists = sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_int(stmt, 0) > 0;
+	sqlite3_finalize(stmt);
+
+	return exists;
+}
+
+void ServerInterface::migrate_legacy_schema()
+{
+	if (table_exists("logs_legacy") && !column_exists("logs_legacy", "migrated")) {
+		execute_query("ALTER TABLE logs_legacy ADD COLUMN migrated INTEGER DEFAULT 0");
+	}
+
+	// Pre-FTP databases keyed logs on (LOG_ENTRY date, size)
+	if (table_exists("logs") && !column_exists("logs", "remote_path")) {
+		LOG("Migrating " << _settings.db_path << " to the MAVLink FTP log schema");
+
+		if (table_exists("logs_legacy")) {
+			// An older logloader ran again after this one (the ARK-OS installer
+			// allows downgrades), so fold its state into the existing table.
+			execute_query(
+				"INSERT OR IGNORE INTO logs_legacy (uuid, id, date, size_bytes, downloaded, uploaded, migrated) "
+				"SELECT uuid, id, date, size_bytes, downloaded, uploaded, 0 FROM logs");
+			execute_query("DROP TABLE logs");
+
+		} else {
+			execute_query("ALTER TABLE logs RENAME TO logs_legacy");
+			execute_query("ALTER TABLE logs_legacy ADD COLUMN migrated INTEGER DEFAULT 0");
+		}
+	}
+
+	_has_legacy_table = table_exists("logs_legacy");
+}
+
+void ServerInterface::grandfather_from_legacy(const LogEntry& entry)
+{
+	if (!_has_legacy_table) {
+		return;
+	}
+
+	struct LegacyRow {
+		std::string uuid;
+		int id;
+		std::string date;
+		bool downloaded;
+		bool uploaded;
+	};
+
+	std::vector<LegacyRow> candidates;
+
+	sqlite3_stmt* stmt;
+
+	const char* query =
+		"SELECT uuid, id, date, downloaded, uploaded FROM logs_legacy "
+		"WHERE migrated = 0 AND size_bytes = ?";
+
+	if (sqlite3_prepare_v2(_db, query, -1, &stmt, nullptr) != SQLITE_OK) {
+		return;
+	}
+
+	sqlite3_bind_int64(stmt, 1, entry.size_bytes);
+
+	while (sqlite3_step(stmt) == SQLITE_ROW) {
+		LegacyRow row;
+		const unsigned char* uuid_text = sqlite3_column_text(stmt, 0);
+		const unsigned char* date_text = sqlite3_column_text(stmt, 2);
+		row.uuid = uuid_text ? reinterpret_cast<const char*>(uuid_text) : "";
+		row.id = sqlite3_column_int(stmt, 1);
+		row.date = date_text ? reinterpret_cast<const char*>(date_text) : "";
+		row.downloaded = sqlite3_column_int(stmt, 3) != 0;
+		row.uploaded = sqlite3_column_int(stmt, 4) != 0;
+		candidates.push_back(row);
+	}
+
+	sqlite3_finalize(stmt);
+
+	if (candidates.empty()) {
+		return;
+	}
+
+	// The legacy date is the log's modification time; the new one is either
+	// that as well or the start time parsed from the path. Same log, so they
+	// are at most a flight apart. Without a time to compare, only an
+	// unambiguous single candidate is safe to claim.
+	const LegacyRow* match = nullptr;
+	const auto entry_time = parse_iso8601_utc(entry.date);
+
+	if (entry_time.has_value()) {
+		constexpr int64_t kMaxDelta = 48 * 3600;
+		int64_t best_delta = kMaxDelta;
+
+		for (const auto& candidate : candidates) {
+			const auto legacy_time = parse_iso8601_utc(candidate.date);
+
+			if (!legacy_time.has_value()) {
+				continue;
+			}
+
+			const int64_t delta = std::abs(legacy_time.value() - entry_time.value());
+
+			if (delta <= best_delta) {
+				best_delta = delta;
+				match = &candidate;
+			}
+		}
+
+	} else if (candidates.size() == 1) {
+		match = &candidates.front();
+	}
+
+	if (match == nullptr) {
+		return;
+	}
+
+	// Reconstruct the file name the legacy naming scheme used
+	std::ostringstream legacy_name;
+	legacy_name << _settings.logs_directory << "LOG" << std::setfill('0') << std::setw(4)
+		    << match->id << "_" << match->date << ".ulg";
+
+	const std::string legacy_path = legacy_name.str();
+	const bool file_exists = fs::exists(legacy_path);
+
+	// A log whose file went missing before it was uploaded is re-downloaded
+	const bool downloaded = match->downloaded && (file_exists || match->uploaded);
+	const std::string local_path = (match->downloaded && file_exists) ? legacy_path : "";
+
+	const char* update_query = "UPDATE logs SET downloaded = ?, uploaded = ?, local_path = ? WHERE uuid = ?";
+
+	if (sqlite3_prepare_v2(_db, update_query, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_int(stmt, 1, downloaded ? 1 : 0);
+		sqlite3_bind_int(stmt, 2, match->uploaded ? 1 : 0);
+		sqlite3_bind_text(stmt, 3, local_path.c_str(), -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 4, entry.uuid.c_str(), -1, SQLITE_STATIC);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+
+	if (is_blacklisted(match->uuid)) {
+		add_to_blacklist(entry.uuid, "Migrated from legacy uuid " + match->uuid);
+	}
+
+	const char* mark_query = "UPDATE logs_legacy SET migrated = 1 WHERE uuid = ?";
+
+	if (sqlite3_prepare_v2(_db, mark_query, -1, &stmt, nullptr) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, match->uuid.c_str(), -1, SQLITE_STATIC);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+
+	LOG_DEBUG("Migrated legacy log " << match->uuid << " -> " << entry.uuid
+		  << " (" << entry.remote_path << ")");
 }
 
 void ServerInterface::close_database()
@@ -574,27 +763,20 @@ ServerInterface::DatabaseEntry ServerInterface::row_to_db_entry(sqlite3_stmt* st
 	DatabaseEntry entry;
 
 	const unsigned char* uuid_text = sqlite3_column_text(stmt, 0);
+	entry.uuid = uuid_text ? reinterpret_cast<const char*>(uuid_text) : "";
 
-	if (uuid_text != nullptr) {
-		entry.uuid = reinterpret_cast<const char*>(uuid_text);
-
-	} else {
-		entry.uuid = "";
-	}
-
-	entry.id = sqlite3_column_int(stmt, 1);
+	const unsigned char* path_text = sqlite3_column_text(stmt, 1);
+	entry.remote_path = path_text ? reinterpret_cast<const char*>(path_text) : "";
 
 	const unsigned char* date_text = sqlite3_column_text(stmt, 2);
+	entry.date = date_text ? reinterpret_cast<const char*>(date_text) : "";
 
-	if (date_text != nullptr) {
-		entry.date = reinterpret_cast<const char*>(date_text);
+	entry.size_bytes = static_cast<uint32_t>(sqlite3_column_int64(stmt, 3));
 
-	} else {
-		entry.date = "";
-	}
+	const unsigned char* local_text = sqlite3_column_text(stmt, 4);
+	entry.local_path = local_text ? reinterpret_cast<const char*>(local_text) : "";
 
-	entry.size_bytes = sqlite3_column_int(stmt, 3);
-	entry.downloaded = sqlite3_column_int(stmt, 4) != 0;
+	entry.downloaded = sqlite3_column_int(stmt, 5) != 0;
 
 	return entry;
 }

@@ -4,3 +4,12 @@ remote_server = "https://review.px4.io"
 email = ""
 upload_enabled = false
 public_logs = false
+
+# Vehicle log directory. Empty probes "@MAV_LOG" (the virtual log directory from
+# the MAVLink FTP specification), then "/fs/microsd/log" (PX4) and "/APM/LOGS"
+# (ArduPilot). Set this when the logs live somewhere else.
+remote_log_directory = ""
+
+# FTP burst reads. Much faster, disable it if the flight stack's burst support
+# misbehaves.
+ftp_use_burst = true
