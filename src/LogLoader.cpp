@@ -3,429 +3,550 @@
 
 #include <algorithm>
 #include <chrono>
-#include <ctime>
 #include <filesystem>
 #include <iomanip>
-#include <iostream>
+#include <sstream>
+
+#include <mavsdk/log_callback.h>
 
 namespace fs = std::filesystem;
 
 namespace
 {
 
-std::string iso8601_utc(int64_t time_utc)
+// How many logs in a row may fail transiently before the batch is abandoned for
+// this cycle. Enough to skip past a bad file, few enough not to hammer a server
+// that is having a bad day.
+constexpr int kMaxConsecutiveUploadRetries = 3;
+
+constexpr auto kFastIndexInterval = std::chrono::seconds(5);
+
+std::string human_size(uint32_t bytes)
 {
-	char buffer[sizeof "2018-08-31T20:50:42Z"];
-	const time_t as_time_t = static_cast<time_t>(time_utc);
-	std::tm tm {};
-	gmtime_r(&as_time_t, &tm);
-	strftime(buffer, sizeof(buffer), "%FT%TZ", &tm);
-	return buffer;
+	std::ostringstream out;
+	out << std::fixed << std::setprecision(1) << bytes / 1e6 << " MB";
+	return out.str();
 }
 
 } // namespace
 
-LogLoader::LogLoader(const LogLoader::Settings& settings)
-	: _settings(settings)
+LogLoader::LogLoader(const Config& config)
+	: _config(config)
+	, _database(config.data_directory + "logloader.db", config.logs_directory,
+		    std::vector<std::string> {kTargetLocal, kTargetRemote})
 {
-	// Disable mavsdk noise
-	mavsdk::log::subscribe([](...) {
-		// https://mavsdk.mavlink.io/main/en/cpp/guide/logging.html
-		return true;
-	});
+	// MAVSDK's own logging is noisy and duplicates what we report ourselves.
+	mavsdk::log::subscribe([](...) { return true; });
 
-	_logs_directory = _settings.application_directory + "logs/";
+	std::error_code ec;
+	fs::create_directories(_config.logs_directory, ec);
 
-	// Both databases live in the application directory, so it has to exist
-	// before the server interfaces open them
-	fs::create_directories(_logs_directory);
+	for (const auto* target : _config.targets()) {
+		_targets.push_back(std::make_unique<UploadTarget>(*target));
+	}
+}
 
-	// Setup local server interface
-	ServerInterface::Settings local_server_settings = {
-		.server_url = settings.local_server,
-		.user_email = "",
-		.logs_directory = _logs_directory,
-		.db_path = _settings.application_directory + "local_server.db",
-		.upload_enabled = true, // Always upload to local server
-		.public_logs = true, // Public required true for searching using Web UI
-		.api_key = "", // Local Flight Review is typically open on the companion
-	};
+LogLoader::~LogLoader()
+{
+	stop();
 
-	// Setup remote server interface
-	ServerInterface::Settings remote_server_settings = {
-		.server_url = settings.remote_server,
-		.user_email = settings.email,
-		.logs_directory = _logs_directory,
-		.db_path = _settings.application_directory + "remote_server.db",
-		.upload_enabled = settings.upload_enabled,
-		.public_logs = settings.public_logs,
-		.api_key = settings.remote_api_key,
-	};
+	if (_upload_thread.joinable()) {
+		_upload_thread.join();
+	}
 
-	_local_server = std::make_shared<ServerInterface>(local_server_settings);
-	_remote_server = std::make_shared<ServerInterface>(remote_server_settings);
+	// Drop the MAVSDK plugins while everything they might call back into is
+	// still alive. Member destruction alone would do this in the right order,
+	// but only by accident of declaration order.
+	_ftp.reset();
+	_telemetry.reset();
+	_mavsdk.reset();
+}
 
-	std::cout << std::fixed << std::setprecision(8);
+std::vector<std::string> LogLoader::enabled_target_names() const
+{
+	std::vector<std::string> names;
+
+	for (const auto& target : _targets) {
+		if (target->enabled()) {
+			names.push_back(target->name());
+		}
+	}
+
+	return names;
 }
 
 void LogLoader::stop()
 {
-	{
-		std::lock_guard<std::mutex> lock(_exit_cv_mutex);
-		_should_exit = true;
-	}
-	_exit_cv.notify_all();
+	_index_waiter.stop();
+	_upload_waiter.stop();
+	_status->shutdown();
 
-	if (_ftp_fetcher) {
-		_ftp_fetcher->stop();
+	if (_ftp) {
+		_ftp->stop();
 	}
 }
 
-bool LogLoader::wait_for(std::chrono::seconds duration)
+void LogLoader::wake()
 {
-	std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-	_exit_cv.wait_for(lock, duration, [this] { return _should_exit.load(); });
-	return _should_exit;
+	_index_waiter.wake();
+	_upload_waiter.wake();
 }
 
-bool LogLoader::wait_for_mavsdk_connection(double timeout_ms)
+bool LogLoader::armed()
 {
-	LOG("Connecting to " << _settings.mavsdk_connection_url);
-	_mavsdk = std::make_shared<mavsdk::Mavsdk>(mavsdk::Mavsdk::Configuration(1, MAV_COMP_ID_ONBOARD_COMPUTER,
-			true)); // Emit heartbeats (Client)
-	auto result = _mavsdk->add_any_connection(_settings.mavsdk_connection_url);
+	return _telemetry && _telemetry->armed();
+}
 
-	if (result != mavsdk::ConnectionResult::Success) {
-		LOG("Connection failed: " << result);
-		return false;
+bool LogLoader::connect()
+{
+	while (!_index_waiter.stopped()) {
+		LOG("Connecting to " << _config.connection_url);
+
+		_mavsdk = std::make_shared<mavsdk::Mavsdk>(
+				  mavsdk::Mavsdk::Configuration(1, MAV_COMP_ID_ONBOARD_COMPUTER, true));
+
+		if (_mavsdk->add_any_connection(_config.connection_url) != mavsdk::ConnectionResult::Success) {
+			LOG_ERROR("Could not open " << _config.connection_url);
+			_mavsdk.reset();
+
+			if (_index_waiter.wait(std::chrono::seconds(5))) {
+				return false;
+			}
+
+			continue;
+		}
+
+		// Seconds, despite what the MAVSDK parameter name suggests.
+		auto system = _mavsdk->first_autopilot(3.0);
+
+		if (!system) {
+			// Drop the connection before retrying: holding the UDP port open
+			// while rebinding it is how "address in use" happens.
+			_mavsdk.reset();
+			continue;
+		}
+
+		LOG("Connected to the autopilot");
+
+		_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
+
+		FtpLogFetcher::Settings settings = {
+			.temp_directory = _config.data_directory + "tmp/",
+			.remote_directory = _config.remote_log_directory,
+			.use_burst = _config.use_burst,
+		};
+		_ftp = std::make_shared<FtpLogFetcher>(system.value(), settings);
+
+		// PX4 serves one FTP session at a time, so one left open by a run that
+		// was killed mid-transfer blocks every transfer until the vehicle
+		// reboots.
+		_ftp->reset_sessions();
+
+		_status->update([](StatusBoard::Snapshot & snapshot) { snapshot.connected = true; });
+		return true;
 	}
 
-	auto system = _mavsdk->first_autopilot(timeout_ms);
-
-	if (!system) {
-		LOG("Timed out waiting for system");
-		return false;
-	}
-
-	LOG("Connected.");
-
-	// MAVSDK plugins
-	_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
-
-	FtpLogFetcher::Settings ftp_settings = {
-		.temp_directory = _settings.application_directory + "tmp/",
-		.remote_directory = _settings.remote_log_directory,
-		.use_burst = _settings.ftp_use_burst,
-	};
-
-	_ftp_fetcher = std::make_shared<FtpLogFetcher>(system.value(), ftp_settings);
-
-	// PX4 serves a single FTP session, so one left open by a previous run (a
-	// hard kill mid-transfer) blocks every transfer until the vehicle reboots.
-	_ftp_fetcher->reset_sessions();
-
-	return true;
+	return false;
 }
 
 void LogLoader::run()
 {
-	auto upload_thread = std::thread(&LogLoader::upload_logs_thread, this);
+	_upload_thread = std::thread(&LogLoader::upload_loop, this);
+	index_loop();
 
-	while (!_should_exit) {
-		// Check if vehicle is armed or if the logger is running
-		// TODO: use SYS_STATUS flags to check logger status -- needs MAVSDK impl
-		// bool logger_running = _telemetry->sys_status_sensors().enabled & MAV_SYS_STATUS_LOGGING;
-		bool logger_running = false;
-		bool vehicle_armed = _telemetry->armed();
+	_upload_waiter.stop();
 
-		if (logger_running || vehicle_armed) {
-			_loop_disabled = true;
-			_remote_server->stop();
-			_local_server->stop();
-			std::this_thread::sleep_for(std::chrono::seconds(1));
-			continue;
+	if (_upload_thread.joinable()) {
+		_upload_thread.join();
+	}
+}
 
-		} else if (_loop_disabled) {
-			_loop_disabled = false;
-			_remote_server->start();
-			_local_server->start();
-			// Stall for a few seconds to allow logger to finish writing
-			std::this_thread::sleep_for(std::chrono::seconds(3));
+// -------------------------------------------------------------------------
+// Index loop: everything that talks to the vehicle
+// -------------------------------------------------------------------------
+
+void LogLoader::index_loop()
+{
+	while (!_index_waiter.stopped()) {
+		const bool is_armed = armed();
+
+		if (is_armed != _was_armed) {
+			_was_armed = is_armed;
+			_status->update([is_armed](StatusBoard::Snapshot & snapshot) { snapshot.armed = is_armed; });
+
+			if (!is_armed) {
+				// The logger needs a moment to close the file it was writing.
+				LOG("Vehicle disarmed, looking for a new log");
+				_fast_index_passes = 3;
+
+				if (_index_waiter.wait(std::chrono::seconds(3))) {
+					break;
+				}
+			}
 		}
 
-		if (!refresh_log_index()) {
-			if (wait_for(std::chrono::seconds(5))) {
+		if (is_armed) {
+			// Downloading competes with the logger for the SD card.
+			if (_index_waiter.wait(std::chrono::seconds(1))) {
 				break;
 			}
 
 			continue;
 		}
 
-		download_pending_logs();
+		std::vector<int64_t> new_ids;
+		size_t stable_count = 0;
 
-		// Periodically re-index the vehicle
-		if (wait_for(std::chrono::seconds(30))) {
+		if (refresh_index(new_ids, stable_count)) {
+			apply_auto_policy(new_ids, stable_count);
+			download_pending();
+		}
+
+		const auto interval = _fast_index_passes > 0
+				      ? kFastIndexInterval
+				      : std::chrono::seconds(_config.index_interval_s);
+
+		if (_fast_index_passes > 0) {
+			_fast_index_passes--;
+		}
+
+		if (_index_waiter.wait(interval)) {
 			break;
 		}
 	}
 
-	LOG_DEBUG("Waiting for upload thread");
-	upload_thread.join();
+	LOG_DEBUG("Index loop finished");
 }
 
-bool LogLoader::refresh_log_index()
+bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_count)
 {
-	auto request_start = std::chrono::steady_clock::now();
-
-	if (!_ftp_fetcher->refresh()) {
+	if (!_ftp->refresh()) {
+		_status->update([](StatusBoard::Snapshot & snapshot) { snapshot.ftp_available = false; });
 		return false;
 	}
 
-	const auto& logs = _ftp_fetcher->logs();
+	std::vector<LogDatabase::Discovered> discovered;
 	size_t growing = 0;
 
-	for (const auto& log : logs) {
+	for (const auto& log : _ftp->logs()) {
 		if (!log.stable) {
-			// Almost certainly the log being written right now. Leave it out of
-			// the databases entirely until it stops changing, so it never
-			// enters the download queue at a size it will not keep.
+			// Almost certainly the log being written right now. Recording it
+			// would enter it into the queue at a size it will not keep.
 			growing++;
 			continue;
 		}
 
-		ServerInterface::LogEntry entry;
-		entry.remote_path = log.relative_path;
-		entry.size_bytes = log.size_bytes;
-		entry.date = log.time_utc.has_value() ? iso8601_utc(log.time_utc.value()) : "";
-		entry.uuid = ServerInterface::generate_uuid(entry.remote_path, entry.size_bytes);
-
-		_local_server->sync_log(entry);
-		_remote_server->sync_log(entry);
+		discovered.push_back({log.relative_path, log.size_bytes, log.time_utc});
 	}
 
-	std::chrono::duration<double> duration = std::chrono::steady_clock::now() - request_start;
-	LOG_DEBUG("Indexed " << logs.size() - growing << " of " << logs.size() << " logs in "
-		  << duration.count() << " seconds (" << growing << " still being written)");
+	stable_count = discovered.size();
+	new_ids = _database.sync_index(discovered);
+
+	const std::string root = _ftp->root();
+	_status->update([&root](StatusBoard::Snapshot & snapshot) {
+		snapshot.ftp_available = true;
+		snapshot.log_root = root;
+	});
+
+	LOG_DEBUG("Indexed " << discovered.size() << " logs in " << root
+		  << (growing > 0 ? " (" + std::to_string(growing) + " still being written)" : ""));
 
 	return true;
 }
 
-const FtpLogFetcher::RemoteLog* LogLoader::find_remote_log(const ServerInterface::DatabaseEntry& db_entry) const
+void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t stable_count)
 {
-	for (const auto& log : _ftp_fetcher->logs()) {
-		if (log.relative_path == db_entry.remote_path && log.size_bytes == db_entry.size_bytes) {
-			return &log;
-		}
+	std::vector<std::string> upload_to;
+
+	if (_config.auto_upload) {
+		upload_to = enabled_target_names();
 	}
 
-	return nullptr;
+	// A database that has never been reconciled cannot tell a log produced by
+	// the flight that just happened from one that has been on the card for a
+	// year. Everything looks new, so almost nothing is fetched.
+	if (!_database.first_index_seen()) {
+		// A log only counts once two listings agree on its size, so the very
+		// first listing after startup legitimately reconciles nothing. Calling
+		// that the first index would make the next one -- the vehicle's entire
+		// history -- look like logs that appeared while we were watching, which
+		// is precisely the bulk download this policy exists to prevent.
+		if (stable_count == 0) {
+			return;
+		}
+
+		_database.set_first_index_seen();
+
+		if (!_config.download_latest_on_first_start) {
+			LOG("First index: " << stable_count
+			    << " logs on the vehicle, none queued (download.latest_on_first_start is off)");
+			return;
+		}
+
+		const auto newest = _database.newest_log_id();
+
+		if (!newest.has_value()) {
+			return;
+		}
+
+		_database.request_download({newest.value()}, upload_to);
+		LOG("First index: " << stable_count << " logs on the vehicle, queueing only the newest. "
+		    "Use the ARK-OS Logs page to fetch any of the others.");
+		return;
+	}
+
+	if (!_config.auto_download || new_ids.empty()) {
+		return;
+	}
+
+	// More than a flight's worth appearing at once means the vehicle is showing
+	// us a card we have not seen, not that it flew ten times in 30 seconds.
+	if (_config.max_auto_queue > 0 && static_cast<int>(new_ids.size()) > _config.max_auto_queue) {
+		const auto newest = _database.newest_log_id(new_ids);
+
+		if (newest.has_value()) {
+			_database.request_download({newest.value()}, upload_to);
+		}
+
+		LOG_WARN(new_ids.size() << " new logs appeared at once, which looks like a different SD card. "
+			 "Queued only the newest; use the ARK-OS Logs page for the rest.");
+		return;
+	}
+
+	_database.request_download(new_ids, upload_to);
+	LOG("Queued " << new_ids.size() << (new_ids.size() == 1 ? " new log" : " new logs"));
 }
 
-void LogLoader::download_pending_logs()
+// -------------------------------------------------------------------------
+// Download
+// -------------------------------------------------------------------------
+
+void LogLoader::download_pending()
 {
-	auto pending = _local_server->get_logs_to_download();
+	const auto pending = _database.logs_to_download();
 
 	if (pending.empty()) {
 		return;
 	}
 
-	// Retry the logs that have failed the least first, so a file that cannot be
-	// fetched never blocks the ones behind it.
-	std::stable_sort(pending.begin(), pending.end(),
-	[this](const ServerInterface::DatabaseEntry & lhs, const ServerInterface::DatabaseEntry & rhs) {
-		auto lhs_it = _download_failures.find(lhs.uuid);
-		auto rhs_it = _download_failures.find(rhs.uuid);
-		const int lhs_failures = lhs_it == _download_failures.end() ? 0 : lhs_it->second;
-		const int rhs_failures = rhs_it == _download_failures.end() ? 0 : rhs_it->second;
-		return lhs_failures < rhs_failures;
-	});
-
 	size_t index = 0;
 
-	for (const auto& db_entry : pending) {
-		if (_should_exit) {
+	for (const auto& entry : pending) {
+		if (_index_waiter.stopped()) {
 			return;
 		}
 
-		// Downloading competes with the logger for the SD card, so give the
-		// rest of the queue back to the outer loop as soon as the vehicle arms
-		if (_telemetry->armed()) {
+		if (armed()) {
 			LOG("Vehicle armed, pausing downloads");
 			return;
 		}
 
 		index++;
 
-		const FtpLogFetcher::RemoteLog* log = find_remote_log(db_entry);
+		const FtpLogFetcher::RemoteLog* remote = _ftp->find(entry.path, entry.size_bytes);
 
-		if (log == nullptr) {
-			// The index is only published when the whole directory listed, so
-			// a log that is not in it is genuinely gone from the vehicle.
-			LOG_DEBUG("Log " << db_entry.remote_path << " is no longer on the vehicle, forgetting it");
-			_local_server->delete_log(db_entry.uuid);
-			_remote_server->delete_log(db_entry.uuid);
+		if (remote == nullptr) {
+			// sync_index marks anything the listing omits absent, and the
+			// queue only offers present logs, so this is a race with a
+			// listing rather than a missing file.
+			LOG_DEBUG(entry.path << " is no longer in the index, skipping");
 			continue;
 		}
 
-		LOG("Downloading log " << index << "/" << pending.size() << ": " << db_entry.remote_path);
+		LOG("Downloading " << index << "/" << pending.size() << ": " << entry.path
+		    << " (" << human_size(entry.size_bytes) << ")");
 
-		if (download_log(db_entry, *log)) {
-			_download_failures.erase(db_entry.uuid);
+		if (download(entry, *remote)) {
+			_upload_waiter.wake();
 
 		} else {
-			_download_failures[db_entry.uuid]++;
+			_database.record_download_failure(entry.id, "download failed");
 		}
 	}
 }
 
-std::string LogLoader::local_path_for(const ServerInterface::DatabaseEntry& db_entry)
+bool LogLoader::download(const LogDatabase::Entry& entry, const FtpLogFetcher::RemoteLog& remote)
 {
-	std::string name = db_entry.remote_path;
+	const std::string local_path = local_path_for(entry);
+	const auto started = std::chrono::steady_clock::now();
+
+	_status->update([&entry](StatusBoard::Snapshot & snapshot) {
+		snapshot.downloading_id = entry.id;
+		snapshot.downloaded_bytes = 0;
+		snapshot.download_total_bytes = entry.size_bytes;
+	});
+
+	// MAVSDK reports progress per chunk, which is far more often than anyone
+	// needs to be told about it.
+	auto last_published = std::make_shared<std::chrono::steady_clock::time_point>(started);
+
+	auto progress = [status = _status, last_published](uint32_t transferred, uint32_t total) {
+		const auto now = std::chrono::steady_clock::now();
+
+		if (now - *last_published < std::chrono::milliseconds(500)) {
+			return;
+		}
+
+		*last_published = now;
+		status->update([transferred, total](StatusBoard::Snapshot & snapshot) {
+			snapshot.downloaded_bytes = transferred;
+			snapshot.download_total_bytes = total;
+		});
+	};
+
+	const bool ok = _ftp->download(remote, local_path, progress);
+
+	_status->update([](StatusBoard::Snapshot & snapshot) {
+		snapshot.downloading_id = 0;
+		snapshot.downloaded_bytes = 0;
+		snapshot.download_total_bytes = 0;
+	});
+
+	if (!ok) {
+		return false;
+	}
+
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+	std::ostringstream rate;
+	rate << std::fixed << std::setprecision(1) << (seconds > 0 ? entry.size_bytes / seconds / 1e3 : 0.);
+	LOG("Downloaded " << entry.path << " in " << std::fixed << std::setprecision(1) << seconds
+	    << "s (" << rate.str() << " kB/s)");
+
+	_database.mark_downloaded(entry.id, local_path);
+	return true;
+}
+
+std::string LogLoader::local_path_for(const LogDatabase::Entry& entry)
+{
+	std::string name = entry.path;
 	std::replace(name.begin(), name.end(), '/', '_');
 
-	const std::string path = _logs_directory + name;
+	const std::string path = _config.logs_directory + name;
 
 	// ArduPilot reuses log file names once its numbering wraps at
-	// LOG_MAX_FILES, so the name may already belong to a log we still have.
-	if (_local_server->local_path_in_use(path, db_entry.uuid)) {
-		return _logs_directory + db_entry.uuid.substr(0, 8) + "_" + name;
+	// LOG_MAX_FILES, so the name may already belong to a log we still hold.
+	if (_database.local_path_in_use(path, entry.id)) {
+		return _config.logs_directory + std::to_string(entry.id) + "_" + name;
 	}
 
 	return path;
 }
 
-bool LogLoader::download_log(const ServerInterface::DatabaseEntry& db_entry, const FtpLogFetcher::RemoteLog& log)
+bool LogLoader::delete_local_file(int64_t id)
 {
-	const std::string local_path = local_path_for(db_entry);
+	const auto entry = _database.log_by_id(id);
 
-	auto time_start = std::chrono::steady_clock::now();
-
-	FtpLogFetcher::ProgressCallback progress;
-
-#ifdef DEBUG_BUILD
-	// Held by the callback rather than captured by reference: MAVSDK owns the
-	// callback and this function returns without it on shutdown.
-	auto last_print = std::make_shared<std::chrono::steady_clock::time_point>(time_start);
-
-	progress = [remote_path = db_entry.remote_path, size_bytes = db_entry.size_bytes, time_start, last_print](
-	uint32_t bytes_transferred, uint32_t total_bytes) {
-		const auto now = std::chrono::steady_clock::now();
-
-		// One line per chunk buries everything else in the journal
-		if (now - *last_print < std::chrono::seconds(1)) {
-			return;
-		}
-
-		*last_print = now;
-
-		auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - time_start).count();
-		double rate_kbps = elapsed_ms > 0 ? (bytes_transferred * 8.0) / elapsed_ms : 0.;
-		int percent = total_bytes > 0 ? int((100.0 * bytes_transferred) / total_bytes) : 0;
-
-		LOG_DEBUG("Downloading: "
-			  << std::setw(24) << std::left << remote_path
-			  << std::setw(8) << std::fixed << std::setprecision(2) << size_bytes / 1e6 << "MB"
-			  << std::setw(6) << std::right << percent << "%"
-			  << std::setw(12) << std::fixed << std::setprecision(2) << rate_kbps << " Kbps"
-			  << std::flush);
-	};
-#endif
-
-	bool success = _ftp_fetcher->download(log, local_path, progress);
-
-	if (!success) {
-		LOG("Download failed");
+	if (!entry.has_value()) {
 		return false;
 	}
 
-	double seconds = std::chrono::duration_cast<std::chrono::milliseconds>(
-				 std::chrono::steady_clock::now() - time_start).count() / 1000.;
-	LOG("Finished in " << std::setprecision(2) << seconds << " seconds");
+	if (!entry->local_path.empty()) {
+		std::error_code ec;
+		fs::remove(entry->local_path, ec);
 
-	// Update downloaded status in both databases
-	_local_server->update_download_status(db_entry.uuid, local_path, true);
-	_remote_server->update_download_status(db_entry.uuid, local_path, true);
-
-	return true;
-}
-
-void LogLoader::upload_logs_thread()
-{
-	while (!_should_exit) {
-		if (_loop_disabled) {
-			std::this_thread::sleep_for(std::chrono::seconds(1));
-			continue;
-		}
-
-		// Query the number of pending log uploads for both servers
-		uint32_t num_logs_local = _local_server->num_logs_to_upload();
-		uint32_t num_logs_remote = _remote_server->num_logs_to_upload();
-
-		// Process uploads for local server
-		if (!_should_exit && !_settings.local_server.empty() && num_logs_local) {
-			LOG_DEBUG("Uploading " << num_logs_local << " logs to LOCAL server");
-			upload_pending_logs(_local_server);
-		}
-
-		// Process uploads for remote server
-		if (!_should_exit && !_settings.remote_server.empty() && _settings.upload_enabled && num_logs_remote) {
-			LOG_DEBUG("Uploading " << num_logs_remote << " logs to REMOTE server");
-			upload_pending_logs(_remote_server);
-		}
-
-		if (!_should_exit) {
-			std::unique_lock<std::mutex> lock(_exit_cv_mutex);
-			_exit_cv.wait_for(lock, std::chrono::seconds(10), [this] { return _should_exit.load(); });
+		if (ec) {
+			LOG_WARN("Could not remove " << entry->local_path << ": " << ec.message());
 		}
 	}
 
-	LOG_DEBUG("upload_logs_thread exiting");
+	_database.clear_local_file(id);
+	return true;
 }
 
-void LogLoader::upload_pending_logs(std::shared_ptr<ServerInterface> server)
+// -------------------------------------------------------------------------
+// Upload loop
+// -------------------------------------------------------------------------
+
+void LogLoader::upload_loop()
 {
-	// Upload all pending logs for this server
-	while (!_should_exit && server->num_logs_to_upload()) {
+	while (!_upload_waiter.stopped()) {
+		for (auto& target : _targets) {
+			if (_upload_waiter.stopped()) {
+				break;
+			}
 
-		// Get one log at a time to upload
-		ServerInterface::DatabaseEntry log_entry = server->get_next_log_to_upload();
+			if (target->enabled()) {
+				upload_pending(*target);
+			}
+		}
 
-		if (log_entry.uuid.empty()) {
-			LOG("Log with empty uuid!");
+		if (_upload_waiter.wait(std::chrono::seconds(_config.upload_interval_s))) {
+			break;
+		}
+	}
+
+	LOG_DEBUG("Upload loop finished");
+}
+
+void LogLoader::upload_pending(UploadTarget& target)
+{
+	const auto pending = _database.logs_to_upload(target.name());
+
+	if (pending.empty()) {
+		return;
+	}
+
+	LOG_DEBUG("Uploading " << pending.size() << " logs to " << target.name());
+
+	int consecutive_retries = 0;
+
+	for (const auto& entry : pending) {
+		if (_upload_waiter.stopped() || armed()) {
 			return;
 		}
 
-		std::string filepath = server->filepath_from_uuid(log_entry.uuid);
+		_status->update([&entry, &target](StatusBoard::Snapshot & snapshot) {
+			snapshot.uploading_id = entry.id;
+			snapshot.uploading_target = target.name();
+		});
 
-		if (filepath.empty()) {
-			LOG("Could not determine file path for UUID: " << log_entry.uuid);
+		const UploadTarget::Result result = target.upload(entry.local_path);
+
+		_status->update([](StatusBoard::Snapshot & snapshot) {
+			snapshot.uploading_id = 0;
+			snapshot.uploading_target.clear();
+		});
+
+		switch (result.outcome) {
+		case UploadTarget::Outcome::Success:
+			LOG("Uploaded " << entry.path << " to " << target.name()
+			    << (result.location.empty() ? "" : ": " + target.url() + result.location));
+			_database.mark_uploaded(entry.id, target.name(), result.location);
+			consecutive_retries = 0;
+			break;
+
+		case UploadTarget::Outcome::Rejected:
+			// Recorded so it is not offered again; the rest of the queue is
+			// unaffected by one log the server will not take.
+			LOG_WARN(target.name() << " rejected " << entry.path << ": " << result.message);
+			_database.mark_upload_rejected(entry.id, target.name(), result.message);
+			consecutive_retries = 0;
+			break;
+
+		case UploadTarget::Outcome::Unauthorized:
+			LOG_WARN(target.name() << " will not accept uploads from this account ("
+				 << result.status_code << "): " << result.message);
+			LOG_WARN("Pausing " << target.name() << " uploads for this cycle; they resume "
+				 "on their own once the account is authorized");
+			_database.record_upload_failure(entry.id, target.name(), result.message);
 			return;
-		}
 
-		ServerInterface::UploadResult result = server->upload_log(log_entry.uuid, filepath);
+		case UploadTarget::Outcome::Unreachable:
+			// Already reported once, with a cooldown, by UploadTarget.
+			return;
 
-		if (result.success) {
-			LOG("Log upload SUCCESS: " << result.message);
+		case UploadTarget::Outcome::Retry:
+			LOG_WARN("Upload of " << entry.path << " to " << target.name() << " failed ("
+				 << result.status_code << "): " << result.message << "; will retry");
+			_database.record_upload_failure(entry.id, target.name(), result.message);
 
-		} else if (result.status_code == 400 || result.status_code == 401 || result.status_code == 403) {
-			LOG("Log upload rejected (" << result.status_code << "): " << result.message);
-
-			// Account/auth policy applies to every log on this server — stop the batch.
-			if (result.status_code == 401 || result.status_code == 403) {
-				LOG("Stopping remote uploads for this cycle (server requires login/approval)");
+			if (++consecutive_retries >= kMaxConsecutiveUploadRetries) {
+				LOG_WARN(target.name() << " failed " << consecutive_retries
+					 << " uploads in a row, leaving the rest for the next cycle");
 				return;
 			}
 
-		} else if (result.status_code == 503) {
-			// Server down (e.g. local flight-review not running). Already logged once
-			// with a cooldown in ServerInterface; do not walk the rest of the queue.
-			return;
-
-		} else {
-			LOG("Log upload TEMPORARILY FAILED (" << result.status_code << "): "
-			    << result.message << " - Will retry later");
-			// Retry on the next pass rather than hammering an unhappy server
-			return;
+			break;
 		}
 	}
 }

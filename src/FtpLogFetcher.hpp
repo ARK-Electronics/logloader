@@ -69,6 +69,10 @@ public:
 	const std::string& root() const { return _root; }
 	const std::vector<RemoteLog>& logs() const { return _logs; }
 
+	// The indexed log with this identity, or nullptr when the last listing did
+	// not report it. The pointer is valid until the next refresh().
+	const RemoteLog* find(const std::string& relative_path, uint32_t size_bytes) const;
+
 	// Downloads a log into local_path, staging the transfer in temp_directory
 	// so partial files never appear next to finished ones. The size reported by
 	// the directory listing must match or the download is discarded.

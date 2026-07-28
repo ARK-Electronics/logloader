@@ -1,114 +1,122 @@
-#include "LogLoader.hpp"
-#include "Log.hpp"
-#include <signal.h>
-#include <iostream>
+#include <atomic>
+#include <cstdio>
 #include <filesystem>
-#include <toml.hpp>
+#include <iostream>
+#include <thread>
 
-static void signal_handler(int signum);
+#include <csignal>
+#include <ctime>
+#include <pthread.h>
 
-std::atomic<bool> _should_exit = false;
-std::shared_ptr<LogLoader> _log_loader;
+#include "ApiServer.hpp"
+#include "Config.hpp"
+#include "Log.hpp"
+#include "LogLoader.hpp"
+
+namespace
+{
+
+void print_usage()
+{
+	std::cout
+			<< "logloader - download flight logs over MAVLink FTP and upload them to Flight Review\n\n"
+			<< "  --config <path>   configuration file to use\n"
+			<< "  --help            show this message\n\n"
+			<< "Without --config, ~/.config/ark/logloader/config.toml is used when it exists,\n"
+			<< "otherwise /opt/ark/share/logloader/config.toml.\n";
+}
+
+// SIGINT/SIGTERM are blocked in every thread and consumed here instead. A
+// handler cannot safely take a lock or signal a condition variable, and stopping
+// cleanly needs both.
+std::thread start_signal_thread(const sigset_t& mask, const std::atomic<bool>& running,
+				const std::function<void()>& on_signal)
+{
+	return std::thread([&mask, &running, on_signal] {
+		const timespec timeout {0, 200 * 1000 * 1000};
+
+		while (running.load())
+		{
+			siginfo_t info {};
+			const int signum = sigtimedwait(&mask, &info, &timeout);
+
+			if (signum > 0) {
+				LOG("Received signal " << signum << ", shutting down");
+				on_signal();
+				return;
+			}
+		}
+	});
+}
+
+} // namespace
 
 int main(int argc, char** argv)
 {
-	signal(SIGINT, signal_handler);
-	signal(SIGTERM, signal_handler);
-	setbuf(stdout, NULL); // Disable stdout buffering
-
-	// Config lookup: --config <path> (or --config=<path>) overrides everything;
-	// otherwise user override > deb-installed default.
-	const std::string home = getenv("HOME") ? getenv("HOME") : "/tmp";
-	const auto user_config = std::filesystem::path(home) / ".config/ark/logloader/config.toml";
-	const auto default_config = std::filesystem::path("/opt/ark/share/logloader/config.toml");
-	std::string config_path = (std::filesystem::exists(user_config) ? user_config : default_config).string();
+	setbuf(stdout, nullptr); // journald wants lines as they happen
 
 	for (int i = 1; i < argc; i++) {
-		std::string arg = argv[i];
+		const std::string arg = argv[i];
 
-		if (arg == "--config" && i + 1 < argc) {
-			config_path = argv[++i];
-
-		} else if (arg.rfind("--config=", 0) == 0) {
-			config_path = arg.substr(std::string("--config=").size());
+		if (arg == "--help" || arg == "-h") {
+			print_usage();
+			return 0;
 		}
 	}
 
-	toml::table config;
+	const std::string config_path = resolve_config_path(argc, argv);
+	Config config;
 
 	try {
-		config = toml::parse_file(config_path);
+		config = load_config(config_path);
 
-	} catch (const toml::parse_error& err) {
-		std::cerr << "Parsing failed:\n" << err << "\n";
-		return -1;
-
-	} catch (const std::exception& err) {
-		std::cerr << "Error: " << err.what() << "\n";
-		return -1;
+	} catch (const std::exception& error) {
+		LOG_ERROR(error.what());
+		return 1;
 	}
 
-	// Writable data directory for logs and SQLite DB
-	const auto data_dir = std::filesystem::path(home) / ".local/share/ark/logloader";
-	std::filesystem::create_directories(data_dir);
+	logging::set_level(config.log_level);
+	LOG("logloader starting, configuration from " << config_path);
 
-	// Setup the LogLoader
-	LogLoader::Settings settings = {
-		.email = config["email"].value_or(""),
-		.local_server = config["local_server"].value_or("http://127.0.0.1:5006"),
-		.remote_server = config["remote_server"].value_or("https://logs.px4.io"),
-		.remote_api_key = config["remote_api_key"].value_or(""),
-		.mavsdk_connection_url = config["connection_url"].value_or("0.0.0"),
-		.application_directory = config["application_directory"].value_or(data_dir.string() + "/"),
-		.upload_enabled = config["upload_enabled"].value_or(false),
-		.public_logs = config["public_logs"].value_or(false),
-		.remote_log_directory = config["remote_log_directory"].value_or(""),
-		.ftp_use_burst = config["ftp_use_burst"].value_or(true)
-	};
+	std::error_code ec;
+	std::filesystem::create_directories(config.logs_directory, ec);
 
-	// Trim whitespace-only keys so they count as "not set" (no empty auth headers).
-	auto trim = [](std::string s) {
-		const auto start = s.find_first_not_of(" \t\r\n");
-
-		if (start == std::string::npos) {
-			return std::string{};
-		}
-
-		const auto end = s.find_last_not_of(" \t\r\n");
-		return s.substr(start, end - start + 1);
-	};
-	settings.remote_api_key = trim(std::move(settings.remote_api_key));
-
-	// Still attempt remote uploads without a key (open servers like logs.px4.io).
-	// Authenticated ARK Flight Review will 403 until remote_api_key is set; we
-	// never send empty Authorization / X-API-Key headers (see ServerInterface).
-	if (settings.upload_enabled && settings.remote_api_key.empty()) {
-		LOG("upload_enabled is true but remote_api_key is empty — remote uploads will "
-		    "proceed without an API key (open servers only; ARK Flight Review needs a key)");
+	if (ec) {
+		LOG_ERROR("Cannot create " << config.logs_directory << ": " << ec.message());
+		return 1;
 	}
 
-	_log_loader = std::make_shared<LogLoader>(settings);
+	sigset_t mask;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGINT);
+	sigaddset(&mask, SIGTERM);
+	pthread_sigmask(SIG_BLOCK, &mask, nullptr);
 
-	bool connected = false;
+	LogLoader loader(config);
 
-	while (!_should_exit && !connected) {
-		connected = _log_loader->wait_for_mavsdk_connection(3);
+	if (!loader.database_ok()) {
+		return 1;
 	}
 
-	if (!_should_exit && connected) {
-		_log_loader->run();
+	ApiServer api(config, loader);
+
+	// Serve before connecting, so the UI can say the vehicle is not there yet
+	// rather than failing to load at all.
+	if (config.api_enabled && !api.start()) {
+		return 1;
 	}
 
-	LOG("Exiting.");
+	std::atomic<bool> running {true};
+	std::thread signals = start_signal_thread(mask, running, [&loader] { loader.stop(); });
 
+	if (loader.connect()) {
+		loader.run();
+	}
+
+	api.stop();
+	running = false;
+	signals.join();
+
+	LOG("logloader stopped");
 	return 0;
-}
-
-static void signal_handler(int signum)
-{
-	(void)signum;
-
-	if (_log_loader.get()) _log_loader->stop();
-
-	_should_exit = true;
 }

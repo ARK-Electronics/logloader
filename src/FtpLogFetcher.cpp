@@ -18,8 +18,9 @@ namespace
 // (PX4 >= v1.17). The physical paths cover firmware that predates it.
 constexpr const char* kProbeRoots[] = {
 	"@MAV_LOG",
-	"/fs/microsd/log", // PX4
+	"/fs/microsd/log", // PX4 on hardware
 	"/APM/LOGS",       // ArduPilot
+	"/log",            // PX4 SITL, and hardware without an SD card mount point
 };
 
 bool ends_with_ignore_case(const std::string& text, const std::string& suffix)
@@ -87,7 +88,10 @@ FtpLogFetcher::FtpLogFetcher(std::shared_ptr<mavsdk::System> system, const FtpLo
 	, _ftp(std::make_shared<mavsdk::Ftp>(system))
 	, _settings(settings)
 {
+	// A run killed mid-transfer leaves a partial file behind. Nothing here
+	// resumes, so the staging directory starts empty every time.
 	std::error_code ec;
+	fs::remove_all(_settings.temp_directory, ec);
 	fs::create_directories(_settings.temp_directory, ec);
 }
 
@@ -150,6 +154,17 @@ bool FtpLogFetcher::refresh()
 	_logs.clear();
 
 	return false;
+}
+
+const FtpLogFetcher::RemoteLog* FtpLogFetcher::find(const std::string& relative_path, uint32_t size_bytes) const
+{
+	for (const auto& log : _logs) {
+		if (log.relative_path == relative_path && log.size_bytes == size_bytes) {
+			return &log;
+		}
+	}
+
+	return nullptr;
 }
 
 void FtpLogFetcher::publish_index(std::vector<RemoteLog>&& logs)
@@ -253,7 +268,7 @@ bool FtpLogFetcher::download(const RemoteLog& log, const std::string& local_path
 
 	_ftp->download_async(remote_path, _settings.temp_directory, _settings.use_burst,
 	[transfer, progress](mavsdk::Ftp::Result result, mavsdk::Ftp::ProgressData data) {
-		if (transfer->settled) {
+		if (transfer->settled.load()) {
 			return;
 		}
 
@@ -265,15 +280,18 @@ bool FtpLogFetcher::download(const RemoteLog& log, const std::string& local_path
 			return;
 		}
 
-		transfer->settled = true;
-		transfer->promise.set_value(result);
+		// The waiter abandons the transfer on shutdown by setting this, so
+		// whoever gets there first is the one that settles the promise.
+		if (!transfer->settled.exchange(true)) {
+			transfer->promise.set_value(result);
+		}
 	});
 
 	// MAVSDK offers no way to cancel the transfer, so on shutdown the wait is
 	// abandoned instead of blocking until MAVSDK times out on its own.
 	while (future_result.wait_for(std::chrono::milliseconds(500)) != std::future_status::ready) {
 		if (_should_exit) {
-			transfer->settled = true;
+			transfer->settled.store(true);
 			fs::remove(staged_path, ec);
 			return false;
 		}

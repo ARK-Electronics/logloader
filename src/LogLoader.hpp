@@ -1,72 +1,95 @@
 #pragma once
 
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
-#include <mavsdk/log_callback.h>
-#include <condition_variable>
-#include <map>
 
+#include "Config.hpp"
 #include "FtpLogFetcher.hpp"
-#include "ServerInterface.hpp"
+#include "LogDatabase.hpp"
+#include "StatusBoard.hpp"
+#include "UploadTarget.hpp"
+#include "Waiter.hpp"
 
+// Ties the pieces together: what the vehicle has (FtpLogFetcher), what we mean
+// to do about it (LogDatabase), and where finished logs go (UploadTarget).
+//
+// Two loops run concurrently. The index loop talks to the vehicle and owns the
+// downloads; the upload loop talks to the servers. They share nothing but the
+// database, which is its own monitor.
 class LogLoader
 {
 public:
-	struct Settings {
-		std::string email;
-		std::string local_server;
-		std::string remote_server;
-		// API key for remote_server (ARK Flight Review account key). Empty = none.
-		std::string remote_api_key;
-		std::string mavsdk_connection_url;
-		std::string application_directory;
-		bool upload_enabled;
-		bool public_logs;
-		std::string remote_log_directory; // Empty probes the known locations
-		bool ftp_use_burst;
-	};
+	explicit LogLoader(const Config& config);
+	~LogLoader();
 
-	LogLoader(const Settings& settings);
+	LogLoader(const LogLoader&) = delete;
+	LogLoader& operator=(const LogLoader&) = delete;
 
+	bool database_ok() const { return _database.ok(); }
+
+	// Blocks until an autopilot answers or stop() is called.
+	bool connect();
+
+	// Runs until stop(). Returns when both loops have finished.
 	void run();
 	void stop();
-	bool wait_for_mavsdk_connection(double timeout_ms);
+
+	// The API server reaches the same state the loops do.
+	LogDatabase& database() { return _database; }
+	StatusBoard& status() { return *_status; }
+
+	// Nudges both loops, so a request made through the API is acted on now
+	// rather than at the end of the current interval.
+	void wake();
+
+	// Removes a downloaded file from disk and forgets it. Returns false when
+	// the log is unknown.
+	bool delete_local_file(int64_t id);
+
+	std::vector<std::string> enabled_target_names() const;
 
 private:
-	// Download
-	bool refresh_log_index();
-	void download_pending_logs();
-	bool download_log(const ServerInterface::DatabaseEntry& db_entry, const FtpLogFetcher::RemoteLog& log);
-	const FtpLogFetcher::RemoteLog* find_remote_log(const ServerInterface::DatabaseEntry& db_entry) const;
-	std::string local_path_for(const ServerInterface::DatabaseEntry& db_entry);
+	void index_loop();
+	void upload_loop();
 
-	// Upload
-	void upload_logs_thread();
-	void upload_pending_logs(std::shared_ptr<ServerInterface> server);
+	// Reconciles the vehicle listing into the database. False when the vehicle
+	// could not be listed, in which case nothing is assumed about what it has.
+	bool refresh_index(std::vector<int64_t>& new_ids, size_t& stable_count);
 
-	// Returns true if we should exit
-	bool wait_for(std::chrono::seconds duration);
+	// Decides what, if anything, to fetch without being asked. This is the
+	// guard against a freshly-installed companion pulling a whole SD card.
+	void apply_auto_policy(const std::vector<int64_t>& new_ids, size_t stable_count);
 
-	Settings _settings;
-	std::string _logs_directory;
+	void download_pending();
+	bool download(const LogDatabase::Entry& entry, const FtpLogFetcher::RemoteLog& remote);
+	std::string local_path_for(const LogDatabase::Entry& entry);
 
-	// Server objects (each with its own database)
-	std::shared_ptr<ServerInterface> _local_server;
-	std::shared_ptr<ServerInterface> _remote_server;
+	void upload_pending(UploadTarget& target);
+
+	bool armed();
+
+	Config _config;
+	LogDatabase _database;
+	// Shared, not owned by value: the download progress callback belongs to
+	// MAVSDK and can fire after this object has begun tearing down.
+	std::shared_ptr<StatusBoard> _status {std::make_shared<StatusBoard>()};
+	std::vector<std::unique_ptr<UploadTarget>> _targets;
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;
-	std::shared_ptr<FtpLogFetcher> _ftp_fetcher;
+	std::shared_ptr<FtpLogFetcher> _ftp;
 
-	// Consecutive download failures per log. A file the vehicle will not part
-	// with (a very large one that keeps timing out, say) is retried last so it
-	// cannot hold up everything behind it.
-	std::map<std::string, int> _download_failures;
+	Waiter _index_waiter;
+	Waiter _upload_waiter;
+	std::thread _upload_thread;
 
-	std::atomic<bool> _should_exit = false;
-
-	std::condition_variable _exit_cv;
-	std::mutex _exit_cv_mutex;
-
-	bool _loop_disabled = false;
+	bool _was_armed {false};
+	// Index more often for a few passes after landing, so the log the flight
+	// just produced is confirmed stable and fetched promptly.
+	int _fast_index_passes {0};
 };
