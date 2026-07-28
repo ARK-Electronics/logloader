@@ -115,8 +115,11 @@ Config load_config(const std::string& path)
 	const auto api = file["api"];
 	const auto download = file["download"];
 	const auto upload = file["upload"];
-	const auto local = upload["local"];
-	const auto remote = upload["remote"];
+	// Deliberately flat rather than [upload.local]: ARK-OS's config editor
+	// renders one level of tables, and an operator who cannot reach these from
+	// the web UI cannot turn remote uploads on.
+	const auto local = file["upload_local"];
+	const auto remote = file["upload_remote"];
 
 	config.data_directory = with_trailing_slash(
 					value_or<std::string>(data["directory"], file["application_directory"], default_data));
@@ -129,7 +132,7 @@ Config load_config(const std::string& path)
 	config.auto_download = download["auto"].value_or(config.auto_download);
 	config.download_latest_on_first_start =
 		download["latest_on_first_start"].value_or(config.download_latest_on_first_start);
-	config.auto_upload = upload["auto"].value_or(true);
+	config.auto_upload = value_or<bool>(upload["auto"], download["auto_upload"], config.auto_upload);
 	config.max_auto_queue = download["max_auto_queue"].value_or(config.max_auto_queue);
 	config.index_interval_s = std::max(1, download["index_interval"].value_or(config.index_interval_s));
 	config.upload_interval_s = std::max(1, upload["interval"].value_or(config.upload_interval_s));

@@ -122,8 +122,21 @@ std::vector<int64_t> ids_from(const json& body)
 	return ids;
 }
 
-json list_payload(LogDatabase& database, const StatusBoard::Snapshot& snapshot,
-		  const std::vector<std::string>& targets)
+// Flight Review answers an upload with a *relative* redirect, so the stored
+// location is only half a link. Shipping each target's base url lets the UI
+// join them itself rather than guessing an origin.
+json targets_json(LogLoader& loader)
+{
+	json targets = json::array();
+
+	for (const auto& [name, url] : loader.enabled_targets()) {
+		targets.push_back(json {{"name", name}, {"url", url}});
+	}
+
+	return targets;
+}
+
+json list_payload(LogDatabase& database, const StatusBoard::Snapshot& snapshot, const json& targets)
 {
 	json logs = json::array();
 
@@ -189,13 +202,13 @@ void ApiServer::install_routes()
 
 	_server->Get("/status", [this](const httplib::Request&, httplib::Response & response) {
 		json payload = to_json(_loader.status().get());
-		payload["targets"] = _loader.enabled_target_names();
+		payload["targets"] = targets_json(_loader);
 		response.set_content(payload.dump(), "application/json");
 	});
 
 	_server->Get("/logs", [this, &database](const httplib::Request&, httplib::Response & response) {
 		const json payload =
-			list_payload(database, _loader.status().get(), _loader.enabled_target_names());
+			list_payload(database, _loader.status().get(), targets_json(_loader));
 		response.set_content(payload.dump(), "application/json");
 	});
 
@@ -216,6 +229,9 @@ void ApiServer::install_routes()
 		auto seen_status = std::make_shared<uint64_t>(UINT64_MAX);
 		auto seen_logs = std::make_shared<uint64_t>(UINT64_MAX);
 
+		// The releaser runs from ~Response on every path -- client disconnect,
+		// write failure, shutdown -- which the provider itself does not: httplib
+		// simply stops calling it when a write fails.
 		response.set_chunked_content_provider("text/event-stream",
 		[this, &database, seen_status, seen_logs](size_t, httplib::DataSink & sink) {
 			StatusBoard& status = _loader.status();
@@ -224,8 +240,7 @@ void ApiServer::install_routes()
 			// the API is stopped on its own, which nothing else would unblock.
 			if (_stopping.load() || status.stopped()) {
 				sink.done();
-				_streams--;
-				return false;
+				return true;
 			}
 
 			const auto snapshot = status.wait_for_change(*seen_status, kEventKeepalive);
@@ -247,7 +262,7 @@ void ApiServer::install_routes()
 			if (log_revision != *seen_logs) {
 				*seen_logs = log_revision;
 				message = "event: logs\ndata: "
-					  + list_payload(database, snapshot, _loader.enabled_target_names()).dump();
+					  + list_payload(database, snapshot, targets_json(_loader)).dump();
 
 			} else {
 				message = "event: status\ndata: " + to_json(snapshot).dump();
@@ -255,7 +270,8 @@ void ApiServer::install_routes()
 
 			message += "\n\n";
 			return sink.write(message.data(), message.size());
-		});
+		},
+		[this](bool) { _streams--; });
 	});
 
 	_server->Post("/logs/download", [this, &database](const httplib::Request & request, httplib::Response & response) {

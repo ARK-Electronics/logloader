@@ -74,8 +74,10 @@ Older versions kept a database per server and identified logs by the timestamp `
 | `download.remote_directory` | `""` | Override the vehicle log directory |
 | `download.use_burst` | `true` | FTP burst reads |
 | `upload.interval` | `10` | Seconds between upload passes |
-| `upload.local.*` | enabled, `http://127.0.0.1:5006` | Flight Review on the companion |
-| `upload.remote.*` | disabled, `https://logs.px4.io` | `url`, `email`, `public`, `api_key` |
+| `upload_local.*` | enabled, `http://127.0.0.1:5006` | Flight Review on the companion |
+| `upload_remote.*` | disabled, `https://logs.px4.io` | `url`, `email`, `public`, `api_key` |
+
+Tables are one level deep on purpose: ARK-OS's config editor renders exactly that, and a setting an operator cannot reach from the web UI may as well not exist.
 
 The flat keys the previous layout used (`local_server`, `remote_server`, `upload_enabled`, `public_logs`, `email`, `remote_api_key`, `remote_log_directory`, `ftp_use_burst`, `application_directory`) are still read, so an existing config keeps working.
 

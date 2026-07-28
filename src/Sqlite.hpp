@@ -50,6 +50,7 @@ private:
 bool execute(sqlite3* db, const std::string& sql);
 
 bool table_exists(sqlite3* db, const std::string& table);
+bool column_exists(sqlite3* db, const std::string& table, const std::string& column);
 
 // Rolls back unless commit() is called, so an early return cannot leave a
 // half-applied multi-statement change behind.
@@ -61,6 +62,10 @@ public:
 
 	Transaction(const Transaction&) = delete;
 	Transaction& operator=(const Transaction&) = delete;
+
+	// False when BEGIN failed, in which case statements run in autocommit and
+	// are durable whatever the caller does next.
+	explicit operator bool() const { return _open; }
 
 	bool commit();
 

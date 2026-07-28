@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <mavsdk/mavsdk.h>
@@ -54,6 +55,9 @@ public:
 	bool delete_local_file(int64_t id);
 
 	std::vector<std::string> enabled_target_names() const;
+	// Name and base url of each enabled target. The url matters because an
+	// upload records only the relative path the server redirected to.
+	std::vector<std::pair<std::string, std::string>> enabled_targets() const;
 
 private:
 	void index_loop();

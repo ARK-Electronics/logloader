@@ -49,7 +49,9 @@ LogDatabase::Entry row_to_entry(const sqlite::Statement& stmt)
 	entry.size_bytes = static_cast<uint32_t>(stmt.column_int(2));
 	entry.time_utc = stmt.column_optional_int(3);
 	entry.local_path = stmt.column_text(4);
-	entry.downloaded = stmt.column_int(5) != 0;
+	// The queues treat a row with no file as not downloaded; so must anything
+	// that reports it, or the API and the queue disagree about the same row.
+	entry.downloaded = stmt.column_int(5) != 0 && !entry.local_path.empty();
 	entry.download_requested = stmt.column_int(6) != 0;
 	entry.present = stmt.column_int(7) != 0;
 	entry.download_failures = static_cast<int>(stmt.column_int(8));
@@ -133,7 +135,22 @@ bool LogDatabase::create_schema()
 					  "  key   TEXT PRIMARY KEY,"
 					  "  value TEXT NOT NULL)");
 
-	return logs && uploads && meta;
+	return logs && uploads && meta && migrate_schema();
+}
+
+bool LogDatabase::migrate_schema()
+{
+	if (!sqlite::column_exists(_db, "logs", "discovered_seq")) {
+		if (!sqlite::execute(_db, "ALTER TABLE logs ADD COLUMN discovered_seq INTEGER NOT NULL DEFAULT 0")) {
+			return false;
+		}
+
+		// discovered_at is the same ordering at coarser resolution, which is
+		// the best that can be reconstructed for rows that predate the column.
+		sqlite::execute(_db, "UPDATE logs SET discovered_seq = discovered_at");
+	}
+
+	return true;
 }
 
 // -------------------------------------------------------------------------
@@ -144,13 +161,32 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 	SyncResult result;
-	result.present_count = logs.size();
+
+	for (const auto& log : logs) {
+		if (log.stable) {
+			result.present_count++;
+		}
+	}
 
 	sqlite::Transaction transaction(_db);
+
+	if (!transaction) {
+		LOG_ERROR("Could not begin a transaction; skipping this index");
+		return result;
+	}
 
 	// The listing is complete (a partial one fails the whole refresh), so
 	// anything it does not mention is gone from the vehicle.
 	sqlite::execute(_db, "UPDATE logs SET present = 0");
+
+	int64_t present_before = 0;
+	{
+		sqlite::Statement stmt(_db, "SELECT COUNT(*) FROM logs WHERE present = 1");
+
+		if (stmt.step()) {
+			present_before = stmt.column_int(0);
+		}
+	}
 
 	const int64_t discovered_at = now_epoch();
 
@@ -170,7 +206,7 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 		int64_t id = 0;
 		bool is_new = false;
 
-		{
+		if (log.stable) {
 			sqlite::Statement insert(_db,
 						 "INSERT OR IGNORE INTO logs "
 						 "(path, size_bytes, time_utc, discovered_at, discovered_seq) "
@@ -193,6 +229,8 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 			find.bind(1, log.path).bind(2, static_cast<int64_t>(log.size_bytes));
 
 			if (!find.step()) {
+				// A log we have never recorded, still being written. Nothing to
+				// mark present; it becomes a row once it stops changing.
 				continue;
 			}
 
@@ -221,7 +259,7 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 	// listing after startup reconciles nothing. Recording that as the first
 	// index would make the next one -- the vehicle's whole history -- look like
 	// logs that appeared while we were watching.
-	if (!logs.empty()) {
+	if (result.present_count > 0) {
 		sqlite::Statement seen(_db, "SELECT value FROM meta WHERE key = 'first_index_seen'");
 		result.first_ever = !seen.step();
 
@@ -232,11 +270,26 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 		}
 	}
 
+	int64_t present_after = 0;
+	{
+		sqlite::Statement stmt(_db, "SELECT COUNT(*) FROM logs WHERE present = 1");
+
+		if (stmt.step()) {
+			present_after = stmt.column_int(0);
+		}
+	}
+
 	if (!commit_or_warn(transaction, "the vehicle index")) {
 		return {};
 	}
 
-	_revision++;
+	// An identical listing, which is what most of them are, is not a change:
+	// bumping the revision anyway would push the whole log list to every open
+	// stream once per index interval for nothing.
+	if (!result.inserted.empty() || present_before != present_after) {
+		_revision++;
+	}
+
 	return result;
 }
 
@@ -404,14 +457,34 @@ void LogDatabase::record_upload_failure(int64_t id, const std::string& target, c
 	_revision++;
 }
 
-void LogDatabase::clear_local_file(int64_t id)
+bool LogDatabase::clear_local_file(int64_t id, const std::string& expected_local_path)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
-	sqlite::Statement stmt(_db,
-			       "UPDATE logs SET downloaded = 0, local_path = '', download_requested = 0 WHERE id = ?");
+
+	// Bound to the path the caller saw. The upload thread works from a snapshot
+	// that can be minutes old, and clearing unconditionally would wipe the
+	// bookkeeping of a download the index thread finished in the meantime.
+	std::string sql = "UPDATE logs SET downloaded = 0, local_path = '', download_requested = 0 WHERE id = ?";
+
+	if (!expected_local_path.empty()) {
+		sql += " AND local_path = ?";
+	}
+
+	sqlite::Statement stmt(_db, sql);
 	stmt.bind(1, id);
+
+	if (!expected_local_path.empty()) {
+		stmt.bind(2, expected_local_path);
+	}
+
 	stmt.execute();
-	_revision++;
+	const bool changed = sqlite3_changes(_db) > 0;
+
+	if (changed) {
+		_revision++;
+	}
+
+	return changed;
 }
 
 // -------------------------------------------------------------------------

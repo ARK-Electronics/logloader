@@ -21,7 +21,7 @@ constexpr int kMaxConsecutiveUploadRetries = 3;
 
 constexpr auto kFastIndexInterval = std::chrono::seconds(5);
 
-std::string human_size(uint32_t bytes)
+std::string human_size(uintmax_t bytes)
 {
 	std::ostringstream out;
 	out << std::fixed << std::setprecision(1) << bytes / 1e6 << " MB";
@@ -60,6 +60,19 @@ LogLoader::~LogLoader()
 	_ftp.reset();
 	_telemetry.reset();
 	_mavsdk.reset();
+}
+
+std::vector<std::pair<std::string, std::string>> LogLoader::enabled_targets() const
+{
+	std::vector<std::pair<std::string, std::string>> targets;
+
+	for (const auto& target : _targets) {
+		if (target->enabled()) {
+			targets.emplace_back(target->name(), target->url());
+		}
+	}
+
+	return targets;
 }
 
 std::vector<std::string> LogLoader::enabled_target_names() const
@@ -153,6 +166,13 @@ bool LogLoader::connect()
 		// PX4 serves one FTP session at a time, so one left open by a run that
 		// was killed mid-transfer blocks every transfer until the vehicle
 		// reboots.
+		if (_index_waiter.stopped()) {
+			// stop() ran while first_autopilot() was blocking, so it saw a null
+			// _ftp and there is nobody else to shut this one down.
+			_ftp->stop();
+			return false;
+		}
+
 		_ftp->reset_sessions();
 
 		_status->set_connected(true);
@@ -235,18 +255,18 @@ std::optional<LogDatabase::SyncResult> LogLoader::refresh_index()
 		return std::nullopt;
 	}
 
+	// The whole listing goes over, growing logs included: a log being written is
+	// still on the vehicle, and leaving it out would mark every row absent on the
+	// first pass after a restart, when nothing has been seen twice yet.
 	std::vector<LogDatabase::Discovered> discovered;
 	size_t growing = 0;
 
 	for (const auto& log : _ftp->logs()) {
 		if (!log.stable) {
-			// Almost certainly the log being written right now. Recording it
-			// would enter it into the queue at a size it will not keep.
 			growing++;
-			continue;
 		}
 
-		discovered.push_back({log.relative_path, log.size_bytes, log.time_utc});
+		discovered.push_back({log.relative_path, log.size_bytes, log.time_utc, log.stable});
 	}
 
 	const LogDatabase::SyncResult sync = _database.sync_index(discovered);
@@ -254,7 +274,7 @@ std::optional<LogDatabase::SyncResult> LogLoader::refresh_index()
 	const std::string root = _ftp->root();
 	_status->set_ftp(true, root);
 
-	LOG_DEBUG("Indexed " << discovered.size() << " logs in " << root
+	LOG_DEBUG("Indexed " << sync.present_count << " logs in " << root
 		  << (growing > 0 ? " (" + std::to_string(growing) + " still being written)" : ""));
 
 	return sync;
@@ -351,7 +371,7 @@ void LogLoader::download_pending()
 		const auto space = fs::space(_config.logs_directory, ec);
 
 		if (!ec && space.available < static_cast<uintmax_t>(entry.size_bytes) * 2) {
-			LOG_ERROR("Only " << human_size(static_cast<uint32_t>(space.available)) << " free in "
+			LOG_ERROR("Only " << human_size(space.available) << " free in "
 				  << _config.logs_directory << "; delete downloaded logs from the ARK-OS Logs "
 				  "page to make room");
 			return;
@@ -365,6 +385,7 @@ void LogLoader::download_pending()
 
 		} else {
 			_database.record_download_failure(entry.id, "download failed");
+			_status->notify();
 		}
 	}
 }
@@ -406,6 +427,9 @@ bool LogLoader::download(const LogDatabase::Entry& entry, const FtpLogFetcher::R
 	    << "s (" << rate.str() << " kB/s)");
 
 	_database.mark_downloaded(entry.id, local_path);
+	// The status board is what streams are blocked on; without this the finished
+	// download would not reach the UI until the next keepalive.
+	_status->notify();
 	return true;
 }
 
@@ -493,23 +517,30 @@ void LogLoader::upload_pending(UploadTarget& target)
 		const UploadTarget::Result result = target.upload(entry.local_path);
 
 		_status->set_upload(0, "");
+		// Every branch below writes to the database; bumping the board after
+		// them is what tells an open stream to re-read the log list.
+		const auto notify = [this] { _status->notify(); };
 
 		switch (result.outcome) {
 		case UploadTarget::Outcome::Success:
 			LOG("Uploaded " << entry.path << " to " << target.name()
 			    << (result.location.empty() ? "" : ": " + target.url() + result.location));
 			_database.mark_uploaded(entry.id, target.name(), result.location);
+			notify();
 			consecutive_retries = 0;
 			break;
 
 		case UploadTarget::Outcome::Missing:
+
 			// Forgetting the file puts the log back in the download queue, which
 			// is the only way it can ever be uploaded. Marking it rejected here
 			// would strand it: never fetched again, never uploaded again.
-			LOG_WARN(entry.local_path << " is gone; queueing it to be fetched again");
-			_database.clear_local_file(entry.id);
-			_database.request({entry.id}, {target.name()});
-			_index_waiter.wake();
+			if (_database.clear_local_file(entry.id, entry.local_path)) {
+				LOG_WARN(entry.local_path << " is gone; queueing it to be fetched again");
+				_database.request({entry.id}, {target.name()});
+				_index_waiter.wake();
+			}
+
 			consecutive_retries = 0;
 			break;
 
@@ -518,6 +549,7 @@ void LogLoader::upload_pending(UploadTarget& target)
 			// unaffected by one log the server will not take.
 			LOG_WARN(target.name() << " rejected " << entry.path << ": " << result.message);
 			_database.mark_upload_rejected(entry.id, target.name(), result.message);
+			notify();
 			consecutive_retries = 0;
 			break;
 
@@ -527,6 +559,7 @@ void LogLoader::upload_pending(UploadTarget& target)
 			LOG_WARN("Pausing " << target.name() << " uploads for this cycle; they resume "
 				 "on their own once the account is authorized");
 			_database.record_upload_failure(entry.id, target.name(), result.message);
+			notify();
 			return;
 
 		case UploadTarget::Outcome::Unreachable:
@@ -537,6 +570,7 @@ void LogLoader::upload_pending(UploadTarget& target)
 			LOG_WARN("Upload of " << entry.path << " to " << target.name() << " failed ("
 				 << result.status_code << "): " << result.message << "; will retry");
 			_database.record_upload_failure(entry.id, target.name(), result.message);
+			notify();
 
 			if (++consecutive_retries >= kMaxConsecutiveUploadRetries) {
 				LOG_WARN(target.name() << " failed " << consecutive_retries

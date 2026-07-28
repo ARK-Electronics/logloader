@@ -50,12 +50,12 @@ auto = true
 interval = 10
 
 # Flight Review running on this companion. Left open, so no key is needed.
-[upload.local]
+[upload_local]
 enabled = true
 url = "http://127.0.0.1:5006"
 public = true
 
-[upload.remote]
+[upload_remote]
 enabled = false
 url = "https://logs.px4.io"
 email = ""

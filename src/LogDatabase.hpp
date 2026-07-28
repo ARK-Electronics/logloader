@@ -59,6 +59,10 @@ public:
 		std::string path;
 		uint32_t size_bytes {0};
 		std::optional<int64_t> time_utc;
+		// False while the log is still growing. It is on the vehicle either way,
+		// but only a log that has stopped changing is worth recording, since its
+		// identity includes its size.
+		bool stable {true};
 	};
 
 	LogDatabase(const std::string& db_path, const std::string& logs_directory,
@@ -73,6 +77,7 @@ public:
 	struct SyncResult {
 		// Rows this call created, in the order the vehicle listed them.
 		std::vector<int64_t> inserted;
+		// Stable logs in this listing.
 		size_t present_count {0};
 		// This call reconciled the first listing that had anything in it. On a
 		// fresh database every log looks new, and queueing them all is exactly
@@ -108,8 +113,10 @@ public:
 	void mark_upload_rejected(int64_t id, const std::string& target, const std::string& message);
 	void record_upload_failure(int64_t id, const std::string& target, const std::string& message);
 
-	// Forgets the downloaded file (the caller removes it from disk).
-	void clear_local_file(int64_t id);
+	// Forgets the downloaded file (the caller removes it from disk). Pass the
+	// path the caller believes is there to avoid clobbering a newer download;
+	// returns false when the row had moved on.
+	bool clear_local_file(int64_t id, const std::string& expected_local_path = {});
 
 	// Queries -------------------------------------------------------------
 	std::vector<Entry> all_logs() const;
@@ -127,6 +134,9 @@ public:
 private:
 	bool initialize(const std::string& db_path);
 	bool create_schema();
+	// A column added after a database was created has to be added explicitly:
+	// CREATE TABLE IF NOT EXISTS is a no-op on a table that is already there.
+	bool migrate_schema();
 	void attach_uploads(std::vector<Entry>& entries) const;
 	void ensure_upload_rows(int64_t id);
 

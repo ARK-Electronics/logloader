@@ -143,6 +143,13 @@ bool table_exists(sqlite3* db, const std::string& table)
 	return stmt.step() && stmt.column_int(0) > 0;
 }
 
+bool column_exists(sqlite3* db, const std::string& table, const std::string& column)
+{
+	Statement stmt(db, "SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?");
+	stmt.bind(1, table).bind(2, column);
+	return stmt.step() && stmt.column_int(0) > 0;
+}
+
 Transaction::Transaction(sqlite3* db)
 	: _db(db)
 {

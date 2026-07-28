@@ -101,8 +101,14 @@ UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 
 	const auto size = fs::file_size(file_path, ec);
 
-	if (ec || size == 0) {
-		return {Outcome::Missing, 0, "local file is empty: " + file_path, ""};
+	if (ec) {
+		return {Outcome::Missing, 0, "cannot stat local file: " + file_path, ""};
+	}
+
+	// Not Missing: re-fetching a log the vehicle reports as zero bytes would
+	// download nothing, succeed, and come straight back here forever.
+	if (size == 0) {
+		return {Outcome::Rejected, 0, "log is empty: " + file_path, ""};
 	}
 
 	if (!reachable()) {

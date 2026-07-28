@@ -172,6 +172,28 @@ void a_log_that_leaves_the_vehicle_keeps_its_history()
 	CHECK(back->uploads.at("local").uploaded);
 }
 
+// The first listing after a restart has nothing stable in it yet, because
+// stability takes two listings. Every log is still on the vehicle, and saying
+// otherwise both lies to the UI and empties the download queue for an interval.
+void a_growing_log_is_still_on_the_vehicle()
+{
+	Workspace workspace;
+	LogDatabase database(workspace.db(), workspace.logs(), kTargets);
+
+	LogDatabase::Discovered settled = px4("a.ulg", 100, 1000);
+	database.sync_index({settled});
+	CHECK(database.log_by_id(database.all_logs().front().id)->present);
+
+	// Same listing, but nothing has been confirmed stable this time round.
+	LogDatabase::Discovered growing = settled;
+	growing.stable = false;
+	const auto sync = database.sync_index({growing});
+
+	CHECK(sync.present_count == 0);
+	CHECK(sync.inserted.empty());
+	CHECK(database.all_logs().front().present);
+}
+
 void a_growing_log_is_a_different_log()
 {
 	Workspace workspace;
@@ -433,6 +455,43 @@ void a_missing_legacy_file_is_fetched_again()
 	CHECK(database.ids_not_downloaded().size() == 1);
 }
 
+// CREATE TABLE IF NOT EXISTS does nothing to a table that is already there, so a
+// column added later is invisible on an existing database and every query naming
+// it silently returns nothing.
+void an_older_schema_is_migrated()
+{
+	Workspace workspace;
+
+	{
+		sqlite3* db = nullptr;
+		CHECK(sqlite3_open(workspace.db().c_str(), &db) == SQLITE_OK);
+		sqlite::execute(db,
+				"CREATE TABLE logs ("
+				"  id INTEGER PRIMARY KEY, path TEXT NOT NULL, size_bytes INTEGER NOT NULL,"
+				"  time_utc INTEGER, local_path TEXT NOT NULL DEFAULT '',"
+				"  downloaded INTEGER NOT NULL DEFAULT 0, download_requested INTEGER NOT NULL DEFAULT 0,"
+				"  present INTEGER NOT NULL DEFAULT 1, download_failures INTEGER NOT NULL DEFAULT 0,"
+				"  last_error TEXT NOT NULL DEFAULT '', discovered_at INTEGER NOT NULL DEFAULT 0,"
+				"  UNIQUE (path, size_bytes))");
+		sqlite::execute(db,
+				"INSERT INTO logs (path, size_bytes, time_utc, discovered_at) "
+				"VALUES ('old.ulg', 100, 1000, 7)");
+		sqlite3_close(db);
+	}
+
+	LogDatabase database(workspace.db(), workspace.logs(), kTargets);
+	CHECK(database.ok());
+
+	const auto logs = database.all_logs();
+	CHECK(logs.size() == 1);
+	CHECK(logs.front().path == "old.ulg");
+
+	// And the new column is usable, not just present.
+	const auto sync = database.sync_index({px4("old.ulg", 100, 1000), px4("new.ulg", 200, 2000)});
+	CHECK(sync.inserted.size() == 1);
+	CHECK(database.newest_log_id().has_value());
+}
+
 void a_database_with_no_predecessor_is_untouched()
 {
 	Workspace workspace;
@@ -449,6 +508,7 @@ int main()
 	first_index_needs_a_non_empty_listing();
 	newest_is_newest_for_both_stacks();
 	a_log_that_leaves_the_vehicle_keeps_its_history();
+	a_growing_log_is_still_on_the_vehicle();
 	a_growing_log_is_a_different_log();
 	requests_drive_the_queues();
 	a_downloaded_log_with_no_file_is_not_downloaded();
@@ -457,6 +517,7 @@ int main()
 	ardupilot_name_reuse_does_not_overwrite();
 	ids_for_everything_respect_target_state();
 
+	an_older_schema_is_migrated();
 	the_upgrade_does_not_refetch_or_reupload();
 	the_upgrade_runs_once();
 	a_missing_legacy_file_is_fetched_again();
