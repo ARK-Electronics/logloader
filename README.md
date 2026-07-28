@@ -68,7 +68,7 @@ Older versions kept a database per server and identified logs by the timestamp `
 | `api.enabled` / `api.bind` / `api.port` | `true` / `127.0.0.1` / `3005` | Local HTTP API |
 | `download.auto` | `true` | Queue logs that appear while running |
 | `download.latest_on_first_start` | `true` | On a fresh database, take only the newest |
-| `download.auto_upload` | `true` | Upload what was queued automatically |
+| `upload.auto` | `true` | Upload what was queued automatically |
 | `download.max_auto_queue` | `5` | Bulk-discovery guard; 0 disables |
 | `download.index_interval` | `30` | Seconds between listings |
 | `download.remote_directory` | `""` | Override the vehicle log directory |
@@ -96,7 +96,15 @@ cd logloader
 make
 ```
 
-`make` builds Release. `make debug` builds with debug symbols and no optimisation; the log level is a runtime setting either way.
+`make` builds Release. `make debug` builds with debug symbols and no optimisation; the log level is a runtime setting either way. `make format` runs astyle and `make check-format` fails if anything needs it — the build itself never rewrites your sources.
+
+### Tests
+
+```
+cmake -B build -DBUILD_TESTING=ON && cmake --build build && ctest --test-dir build
+```
+
+`tests/test_log_database.cpp` covers the database, which is where every decision about a log is recorded: the first-index rule, logs appearing and disappearing from the vehicle, request and cancel, recovery when a downloaded file goes missing, ArduPilot's name reuse, and the upgrade from a pre-FTP database — which runs once against real user data and cannot be un-run.
 
 ### Run
 
