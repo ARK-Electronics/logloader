@@ -1,4 +1,5 @@
 #include "ApiServer.hpp"
+#include "Config.hpp"
 #include "Log.hpp"
 #include "LogLoader.hpp"
 
@@ -18,13 +19,22 @@ namespace
 // so an idle connection is not mistaken for a dead one by anything in between.
 constexpr auto kEventKeepalive = std::chrono::seconds(15);
 
+constexpr size_t kWorkerThreads = 16;
+constexpr size_t kMaxStreams = 8;
+constexpr size_t kMaxRequestBody = 1 << 20;
+
 std::string iso8601_utc(int64_t time_utc)
 {
+	// A vehicle is free to report any mtime it likes; a year that does not fit
+	// makes strftime return 0 and leave the buffer unspecified.
 	char buffer[sizeof "2026-07-28T10:30:00Z"];
 	const auto as_time_t = static_cast<time_t>(time_utc);
 	std::tm tm {};
-	gmtime_r(&as_time_t, &tm);
-	strftime(buffer, sizeof(buffer), "%FT%TZ", &tm);
+
+	if (gmtime_r(&as_time_t, &tm) == nullptr || strftime(buffer, sizeof(buffer), "%FT%TZ", &tm) == 0) {
+		return {};
+	}
+
 	return buffer;
 }
 
@@ -112,10 +122,22 @@ std::vector<int64_t> ids_from(const json& body)
 	return ids;
 }
 
+json list_payload(LogDatabase& database, const StatusBoard::Snapshot& snapshot,
+		  const std::vector<std::string>& targets)
+{
+	json logs = json::array();
+
+	for (const auto& entry : database.all_logs()) {
+		logs.push_back(to_json(entry));
+	}
+
+	return {{"logs", logs}, {"status", to_json(snapshot)}, {"targets", targets}};
+}
+
 } // namespace
 
-ApiServer::ApiServer(const Config& config, LogLoader& loader)
-	: _config(config)
+ApiServer::ApiServer(const Settings& settings, LogLoader& loader)
+	: _settings(settings)
 	, _loader(loader)
 	, _server(std::make_unique<httplib::Server>())
 {
@@ -129,18 +151,29 @@ ApiServer::~ApiServer()
 
 bool ApiServer::start()
 {
-	if (!_server->bind_to_port(_config.api_bind, _config.api_port)) {
-		LOG_ERROR("Could not bind the API to " << _config.api_bind << ":" << _config.api_port);
+	// Every /events stream holds one worker for as long as it is open, so the
+	// pool has to be bigger than the number of streams we are willing to serve.
+	_server->new_task_queue = [] { return new httplib::ThreadPool(kWorkerThreads); };
+	// Nothing here accepts a large body; the only uploads go the other way.
+	_server->set_payload_max_length(kMaxRequestBody);
+
+	if (!_server->bind_to_port(_settings.bind, _settings.port)) {
+		LOG_ERROR("Could not bind the API to " << _settings.bind << ":" << _settings.port);
 		return false;
 	}
 
 	_thread = std::thread([this] { _server->listen_after_bind(); });
-	LOG("API listening on " << _config.api_bind << ":" << _config.api_port);
+	LOG("API listening on " << _settings.bind << ":" << _settings.port);
 	return true;
 }
 
 void ApiServer::stop()
 {
+	_stopping = true;
+	// Releases the streams blocked in wait_for_change, which would otherwise
+	// keep a worker each and hang the join below.
+	_loader.status().shutdown();
+
 	if (_server) {
 		_server->stop();
 	}
@@ -161,59 +194,66 @@ void ApiServer::install_routes()
 	});
 
 	_server->Get("/logs", [this, &database](const httplib::Request&, httplib::Response & response) {
-		json logs = json::array();
-
-		for (const auto& entry : database.all_logs()) {
-			logs.push_back(to_json(entry));
-		}
-
-		const json payload = {
-			{"logs", logs},
-			{"status", to_json(_loader.status().get())},
-			{"targets", _loader.enabled_target_names()},
-		};
+		const json payload =
+			list_payload(database, _loader.status().get(), _loader.enabled_target_names());
 		response.set_content(payload.dump(), "application/json");
 	});
 
 	// One event per change, so the page reflects a transfer as it happens
 	// rather than on the next poll.
 	_server->Get("/events", [this, &database](const httplib::Request&, httplib::Response & response) {
+		if (_streams.fetch_add(1) >= kMaxStreams) {
+			_streams--;
+			response.status = 503;
+			response.set_content(json {{"error", "too many event streams"}}.dump(), "application/json");
+			return;
+		}
+
 		// nginx buffers a streaming response into uselessness without this.
 		response.set_header("Cache-Control", "no-cache");
 		response.set_header("X-Accel-Buffering", "no");
 
-		auto last_revision = std::make_shared<uint64_t>(UINT64_MAX);
+		auto seen_status = std::make_shared<uint64_t>(UINT64_MAX);
+		auto seen_logs = std::make_shared<uint64_t>(UINT64_MAX);
 
 		response.set_chunked_content_provider("text/event-stream",
-		[this, &database, last_revision](size_t, httplib::DataSink & sink) {
+		[this, &database, seen_status, seen_logs](size_t, httplib::DataSink & sink) {
 			StatusBoard& status = _loader.status();
 
-			if (status.stopped()) {
+			// Either side may be shutting down; _stopping covers the case where
+			// the API is stopped on its own, which nothing else would unblock.
+			if (_stopping.load() || status.stopped()) {
 				sink.done();
+				_streams--;
 				return false;
 			}
 
-			const auto snapshot = status.wait_for_change(*last_revision, kEventKeepalive);
+			const auto snapshot = status.wait_for_change(*seen_status, kEventKeepalive);
+			const uint64_t log_revision = database.revision();
 
-			if (snapshot.revision == *last_revision) {
+			if (snapshot.revision == *seen_status && log_revision == *seen_logs) {
 				// Nothing happened; prove the connection is still good.
-				return sink.write(": keepalive\n\n", 14);
+				static constexpr char keepalive[] = ": keepalive\n\n";
+				return sink.write(keepalive, sizeof(keepalive) - 1);
 			}
 
-			*last_revision = snapshot.revision;
+			*seen_status = snapshot.revision;
 
-			json logs = json::array();
+			// Transfer progress ticks several times a second. Re-reading and
+			// re-serialising every log for each of those would be the hottest
+			// path in the program, so the list only goes out when it changed.
+			std::string message;
 
-			for (const auto& entry : database.all_logs()) {
-				logs.push_back(to_json(entry));
+			if (log_revision != *seen_logs) {
+				*seen_logs = log_revision;
+				message = "event: logs\ndata: "
+					  + list_payload(database, snapshot, _loader.enabled_target_names()).dump();
+
+			} else {
+				message = "event: status\ndata: " + to_json(snapshot).dump();
 			}
 
-			const json payload = {
-				{"logs", logs},
-				{"status", to_json(snapshot)},
-				{"targets", _loader.enabled_target_names()},
-			};
-			const std::string message = "event: logs\ndata: " + payload.dump() + "\n\n";
+			message += "\n\n";
 			return sink.write(message.data(), message.size());
 		});
 	});
@@ -225,28 +265,17 @@ void ApiServer::install_routes()
 			return;
 		}
 
-		std::vector<int64_t> ids = ids_from(body);
+		const std::vector<int64_t> ids =
+			body.value("all", false) ? database.ids_not_downloaded() : ids_from(body);
 
-		if (body.value("all", false)) {
-			ids.clear();
+		// Fetching and uploading normally go together; "upload": false is how a
+		// caller asks for the file without publishing it.
+		const std::vector<std::string> targets =
+			body.value("upload", true) ? _loader.enabled_target_names() : std::vector<std::string> {};
 
-			for (const auto& entry : database.all_logs()) {
-				if (entry.present && !entry.downloaded) {
-					ids.push_back(entry.id);
-				}
-			}
-		}
-
-		// An explicit request says nothing about uploading, so only the
-		// configured targets are asked for when the caller wants them.
-		std::vector<std::string> targets;
-
-		if (body.value("upload", true)) {
-			targets = _loader.enabled_target_names();
-		}
-
-		database.request_download(ids, targets);
+		database.request(ids, targets);
 		_loader.wake();
+		_loader.status().notify();
 
 		response.set_content(json {{"queued", ids.size()}}.dump(), "application/json");
 	});
@@ -283,26 +312,12 @@ void ApiServer::install_routes()
 			return;
 		}
 
-		std::vector<int64_t> ids = ids_from(body);
+		const std::vector<int64_t> ids =
+			body.value("all", false) ? database.ids_not_uploaded(targets) : ids_from(body);
 
-		if (body.value("all", false)) {
-			ids.clear();
-
-			for (const auto& entry : database.all_logs()) {
-				const bool wanted = std::any_of(targets.begin(), targets.end(),
-				[&entry](const std::string & target) {
-					const auto it = entry.uploads.find(target);
-					return it != entry.uploads.end() && !it->second.uploaded;
-				});
-
-				if (wanted && (entry.downloaded || entry.present)) {
-					ids.push_back(entry.id);
-				}
-			}
-		}
-
-		database.request_upload(ids, targets);
+		database.request(ids, targets);
 		_loader.wake();
+		_loader.status().notify();
 
 		response.set_content(json {{"queued", ids.size()}}.dump(), "application/json");
 	});
@@ -317,12 +332,22 @@ void ApiServer::install_routes()
 		const std::vector<int64_t> ids = ids_from(body);
 		database.cancel_requests(ids);
 		_loader.wake();
+		_loader.status().notify();
 
 		response.set_content(json {{"cancelled", ids.size()}}.dump(), "application/json");
 	});
 
 	_server->Delete(R"(/logs/(\d+)/file)", [this](const httplib::Request & request, httplib::Response & response) {
-		const int64_t id = std::stoll(request.matches[1]);
+		int64_t id = 0;
+
+		try {
+			id = std::stoll(request.matches[1]);
+
+		} catch (const std::exception&) {
+			response.status = 404;
+			response.set_content(json {{"error", "no such log"}}.dump(), "application/json");
+			return;
+		}
 
 		if (!_loader.delete_local_file(id)) {
 			response.status = 404;
@@ -330,6 +355,7 @@ void ApiServer::install_routes()
 			return;
 		}
 
+		_loader.status().notify();
 		response.set_content(json {{"deleted", id}}.dump(), "application/json");
 	});
 

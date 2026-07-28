@@ -6,15 +6,56 @@ StatusBoard::Snapshot StatusBoard::get() const
 	return _snapshot;
 }
 
-void StatusBoard::update(const std::function<void(Snapshot&)>& mutate)
+// Callers hold _mutex.
+void StatusBoard::bump()
 {
-	{
-		std::lock_guard<std::mutex> lock(_mutex);
-		mutate(_snapshot);
-		_snapshot.revision++;
-	}
-
+	_snapshot.revision++;
 	_cv.notify_all();
+}
+
+void StatusBoard::set_connected(bool connected)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.connected = connected;
+	bump();
+}
+
+void StatusBoard::set_armed(bool armed)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.armed = armed;
+	bump();
+}
+
+void StatusBoard::set_ftp(bool available, const std::string& log_root)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.ftp_available = available;
+	_snapshot.log_root = log_root;
+	bump();
+}
+
+void StatusBoard::set_download(int64_t id, uint32_t transferred, uint32_t total)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.downloading_id = id;
+	_snapshot.downloaded_bytes = transferred;
+	_snapshot.download_total_bytes = total;
+	bump();
+}
+
+void StatusBoard::set_upload(int64_t id, const std::string& target)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.uploading_id = id;
+	_snapshot.uploading_target = target;
+	bump();
+}
+
+void StatusBoard::notify()
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	bump();
 }
 
 StatusBoard::Snapshot StatusBoard::wait_for_change(uint64_t known_revision,

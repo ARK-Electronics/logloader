@@ -305,7 +305,7 @@ bool FtpLogFetcher::download(const RemoteLog& log, const std::string& local_path
 		return false;
 	}
 
-	if (!fs::exists(staged_path)) {
+	if (!fs::exists(staged_path, ec)) {
 		LOG("FTP reported success but " << staged_path << " is missing");
 		return false;
 	}

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -82,6 +83,9 @@ private:
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;
+	// Assigned by connect() on the main thread and read by stop() on the signal
+	// thread, so it is not just a plain member.
+	std::mutex _ftp_mutex;
 	std::shared_ptr<FtpLogFetcher> _ftp;
 
 	Waiter _index_waiter;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -64,12 +65,12 @@ public:
 	LogDatabase(const LogDatabase&) = delete;
 	LogDatabase& operator=(const LogDatabase&) = delete;
 
-	bool ok() const { return _db != nullptr; }
+	bool ok() const { return _ok; }
 
 	// Index -------------------------------------------------------------
 	// Reconciles the table with a complete vehicle listing: inserts logs not
 	// seen before, and marks every row present or absent. Returns the ids of
-	// the rows this call created, in newest-first order.
+	// the rows this call created, in the order the vehicle listed them.
 	std::vector<int64_t> sync_index(const std::vector<Discovered>& logs);
 
 	// False until the first complete listing has been reconciled. The
@@ -78,10 +79,14 @@ public:
 	bool first_index_seen() const;
 	void set_first_index_seen();
 
+	// Bumped by every write. A reader that has already rendered a given
+	// revision knows the log list has not moved since.
+	uint64_t revision() const { return _revision.load(std::memory_order_relaxed); }
+
 	// Intent -------------------------------------------------------------
-	// Queues a download, and an upload to every target named in targets.
-	void request_download(const std::vector<int64_t>& ids, const std::vector<std::string>& targets);
-	void request_upload(const std::vector<int64_t>& ids, const std::vector<std::string>& targets);
+	// Queues these logs: fetched if not already local, then uploaded to each
+	// named target. Pass no targets to fetch without uploading.
+	void request(const std::vector<int64_t>& ids, const std::vector<std::string>& targets);
 	// Clears pending requests. Work already done is left alone.
 	void cancel_requests(const std::vector<int64_t>& ids);
 
@@ -108,6 +113,11 @@ public:
 	std::optional<int64_t> newest_log_id(const std::vector<int64_t>& among = {}) const;
 	bool local_path_in_use(const std::string& local_path, int64_t excluding_id) const;
 
+	// Backing for the API's "everything" requests, as queries rather than a
+	// full materialisation of the table filtered in the caller.
+	std::vector<int64_t> ids_not_downloaded() const;
+	std::vector<int64_t> ids_not_uploaded(const std::vector<std::string>& targets) const;
+
 private:
 	bool initialize(const std::string& db_path);
 	bool create_schema();
@@ -122,7 +132,11 @@ private:
 	void ensure_upload_rows(int64_t id);
 
 	mutable std::mutex _mutex;
+	std::atomic<uint64_t> _revision {0};
 	sqlite3* _db {nullptr};
+	// Opening the file is not enough: the schema still has to exist, and a
+	// read-only or full data directory fails only at CREATE TABLE.
+	bool _ok {false};
 	std::string _logs_directory;
 	std::vector<std::string> _targets;
 	bool _has_legacy_rows {false};

@@ -24,10 +24,6 @@ auto = true
 # recent one. Everything else is available from the ARK-OS Logs page.
 latest_on_first_start = true
 
-# Upload whatever was fetched automatically. Turn this off to download after a
-# flight but upload only on request.
-auto_upload = true
-
 # If one listing turns up more new logs than this, it is a card we have not seen
 # rather than a flight that just happened: queue only the newest and leave the
 # rest to the operator. 0 disables the guard.
@@ -46,6 +42,10 @@ remote_directory = ""
 use_burst = true
 
 [upload]
+# Upload whatever was fetched automatically. Turn this off to download after a
+# flight but upload only on request.
+auto = true
+
 # Seconds between upload passes.
 interval = 10
 

@@ -81,8 +81,16 @@ void LogLoader::stop()
 	_upload_waiter.stop();
 	_status->shutdown();
 
-	if (_ftp) {
-		_ftp->stop();
+	// connect() may be assigning _ftp on the main thread while the signal
+	// thread is in here.
+	std::shared_ptr<FtpLogFetcher> ftp;
+	{
+		std::lock_guard<std::mutex> lock(_ftp_mutex);
+		ftp = _ftp;
+	}
+
+	if (ftp) {
+		ftp->stop();
 	}
 }
 
@@ -135,14 +143,19 @@ bool LogLoader::connect()
 			.remote_directory = _config.remote_log_directory,
 			.use_burst = _config.use_burst,
 		};
-		_ftp = std::make_shared<FtpLogFetcher>(system.value(), settings);
+		{
+			// Published before reset_sessions, which blocks: a stop arriving
+			// during it has to be able to interrupt it.
+			std::lock_guard<std::mutex> lock(_ftp_mutex);
+			_ftp = std::make_shared<FtpLogFetcher>(system.value(), settings);
+		}
 
 		// PX4 serves one FTP session at a time, so one left open by a run that
 		// was killed mid-transfer blocks every transfer until the vehicle
 		// reboots.
 		_ftp->reset_sessions();
 
-		_status->update([](StatusBoard::Snapshot & snapshot) { snapshot.connected = true; });
+		_status->set_connected(true);
 		return true;
 	}
 
@@ -172,7 +185,7 @@ void LogLoader::index_loop()
 
 		if (is_armed != _was_armed) {
 			_was_armed = is_armed;
-			_status->update([is_armed](StatusBoard::Snapshot & snapshot) { snapshot.armed = is_armed; });
+			_status->set_armed(is_armed);
 
 			if (!is_armed) {
 				// The logger needs a moment to close the file it was writing.
@@ -221,7 +234,7 @@ void LogLoader::index_loop()
 bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_count)
 {
 	if (!_ftp->refresh()) {
-		_status->update([](StatusBoard::Snapshot & snapshot) { snapshot.ftp_available = false; });
+		_status->set_ftp(false, "");
 		return false;
 	}
 
@@ -243,10 +256,7 @@ bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_coun
 	new_ids = _database.sync_index(discovered);
 
 	const std::string root = _ftp->root();
-	_status->update([&root](StatusBoard::Snapshot & snapshot) {
-		snapshot.ftp_available = true;
-		snapshot.log_root = root;
-	});
+	_status->set_ftp(true, root);
 
 	LOG_DEBUG("Indexed " << discovered.size() << " logs in " << root
 		  << (growing > 0 ? " (" + std::to_string(growing) + " still being written)" : ""));
@@ -256,46 +266,49 @@ bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_coun
 
 void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t stable_count)
 {
-	std::vector<std::string> upload_to;
-
-	if (_config.auto_upload) {
-		upload_to = enabled_target_names();
+	// A log only counts once two listings agree on its size, so the very first
+	// listing after startup legitimately reconciles nothing. Calling that the
+	// first index would make the next one -- the vehicle's entire history --
+	// look like logs that appeared while we were watching, which is precisely
+	// the bulk download this policy exists to prevent.
+	if (stable_count == 0) {
+		return;
 	}
 
-	// A database that has never been reconciled cannot tell a log produced by
-	// the flight that just happened from one that has been on the card for a
-	// year. Everything looks new, so almost nothing is fetched.
-	if (!_database.first_index_seen()) {
-		// A log only counts once two listings agree on its size, so the very
-		// first listing after startup legitimately reconciles nothing. Calling
-		// that the first index would make the next one -- the vehicle's entire
-		// history -- look like logs that appeared while we were watching, which
-		// is precisely the bulk download this policy exists to prevent.
-		if (stable_count == 0) {
-			return;
-		}
+	const bool first_index = !_database.first_index_seen();
 
+	if (first_index) {
+		// Recorded even when nothing is queued below, so that turning automatic
+		// fetching on later does not then treat the whole card as new.
 		_database.set_first_index_seen();
+	}
 
+	if (!_config.auto_download) {
+		return;
+	}
+
+	const std::vector<std::string> upload_to =
+		_config.auto_upload ? enabled_target_names() : std::vector<std::string> {};
+
+	if (first_index) {
 		if (!_config.download_latest_on_first_start) {
-			LOG("First index: " << stable_count
-			    << " logs on the vehicle, none queued (download.latest_on_first_start is off)");
+			LOG("First index: " << stable_count << " logs on the vehicle, none queued "
+			    "(download.latest_on_first_start is off)");
 			return;
 		}
 
 		const auto newest = _database.newest_log_id();
 
-		if (!newest.has_value()) {
-			return;
+		if (newest.has_value()) {
+			_database.request({newest.value()}, upload_to);
+			LOG("First index: " << stable_count << " logs on the vehicle, queueing only the newest. "
+			    "Use the ARK-OS Logs page to fetch any of the others.");
 		}
 
-		_database.request_download({newest.value()}, upload_to);
-		LOG("First index: " << stable_count << " logs on the vehicle, queueing only the newest. "
-		    "Use the ARK-OS Logs page to fetch any of the others.");
 		return;
 	}
 
-	if (!_config.auto_download || new_ids.empty()) {
+	if (new_ids.empty()) {
 		return;
 	}
 
@@ -305,7 +318,7 @@ void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t st
 		const auto newest = _database.newest_log_id(new_ids);
 
 		if (newest.has_value()) {
-			_database.request_download({newest.value()}, upload_to);
+			_database.request({newest.value()}, upload_to);
 		}
 
 		LOG_WARN(new_ids.size() << " new logs appeared at once, which looks like a different SD card. "
@@ -313,7 +326,7 @@ void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t st
 		return;
 	}
 
-	_database.request_download(new_ids, upload_to);
+	_database.request(new_ids, upload_to);
 	LOG("Queued " << new_ids.size() << (new_ids.size() == 1 ? " new log" : " new logs"));
 }
 
@@ -330,6 +343,7 @@ void LogLoader::download_pending()
 	}
 
 	size_t index = 0;
+	std::error_code ec;
 
 	for (const auto& entry : pending) {
 		if (_index_waiter.stopped()) {
@@ -353,6 +367,17 @@ void LogLoader::download_pending()
 			continue;
 		}
 
+		// A full data partition otherwise fails every transfer at the final
+		// rename, with nothing in the journal pointing at the cause.
+		const auto space = fs::space(_config.logs_directory, ec);
+
+		if (!ec && space.available < static_cast<uintmax_t>(entry.size_bytes) * 2) {
+			LOG_ERROR("Only " << human_size(static_cast<uint32_t>(space.available)) << " free in "
+				  << _config.logs_directory << "; delete downloaded logs from the ARK-OS Logs "
+				  "page to make room");
+			return;
+		}
+
 		LOG("Downloading " << index << "/" << pending.size() << ": " << entry.path
 		    << " (" << human_size(entry.size_bytes) << ")");
 
@@ -370,17 +395,13 @@ bool LogLoader::download(const LogDatabase::Entry& entry, const FtpLogFetcher::R
 	const std::string local_path = local_path_for(entry);
 	const auto started = std::chrono::steady_clock::now();
 
-	_status->update([&entry](StatusBoard::Snapshot & snapshot) {
-		snapshot.downloading_id = entry.id;
-		snapshot.downloaded_bytes = 0;
-		snapshot.download_total_bytes = entry.size_bytes;
-	});
+	_status->set_download(entry.id, 0, entry.size_bytes);
 
 	// MAVSDK reports progress per chunk, which is far more often than anyone
 	// needs to be told about it.
 	auto last_published = std::make_shared<std::chrono::steady_clock::time_point>(started);
 
-	auto progress = [status = _status, last_published](uint32_t transferred, uint32_t total) {
+	auto progress = [status = _status, last_published, id = entry.id](uint32_t transferred, uint32_t total) {
 		const auto now = std::chrono::steady_clock::now();
 
 		if (now - *last_published < std::chrono::milliseconds(500)) {
@@ -388,19 +409,12 @@ bool LogLoader::download(const LogDatabase::Entry& entry, const FtpLogFetcher::R
 		}
 
 		*last_published = now;
-		status->update([transferred, total](StatusBoard::Snapshot & snapshot) {
-			snapshot.downloaded_bytes = transferred;
-			snapshot.download_total_bytes = total;
-		});
+		status->set_download(id, transferred, total);
 	};
 
 	const bool ok = _ftp->download(remote, local_path, progress);
 
-	_status->update([](StatusBoard::Snapshot & snapshot) {
-		snapshot.downloading_id = 0;
-		snapshot.downloaded_bytes = 0;
-		snapshot.download_total_bytes = 0;
-	});
+	_status->set_download(0, 0, 0);
 
 	if (!ok) {
 		return false;
@@ -495,23 +509,28 @@ void LogLoader::upload_pending(UploadTarget& target)
 			return;
 		}
 
-		_status->update([&entry, &target](StatusBoard::Snapshot & snapshot) {
-			snapshot.uploading_id = entry.id;
-			snapshot.uploading_target = target.name();
-		});
+		_status->set_upload(entry.id, target.name());
 
 		const UploadTarget::Result result = target.upload(entry.local_path);
 
-		_status->update([](StatusBoard::Snapshot & snapshot) {
-			snapshot.uploading_id = 0;
-			snapshot.uploading_target.clear();
-		});
+		_status->set_upload(0, "");
 
 		switch (result.outcome) {
 		case UploadTarget::Outcome::Success:
 			LOG("Uploaded " << entry.path << " to " << target.name()
 			    << (result.location.empty() ? "" : ": " + target.url() + result.location));
 			_database.mark_uploaded(entry.id, target.name(), result.location);
+			consecutive_retries = 0;
+			break;
+
+		case UploadTarget::Outcome::Missing:
+			// Forgetting the file puts the log back in the download queue, which
+			// is the only way it can ever be uploaded. Marking it rejected here
+			// would strand it: never fetched again, never uploaded again.
+			LOG_WARN(entry.local_path << " is gone; queueing it to be fetched again");
+			_database.clear_local_file(entry.id);
+			_database.request({entry.id}, {target.name()});
+			_index_waiter.wake();
 			consecutive_retries = 0;
 			break;
 

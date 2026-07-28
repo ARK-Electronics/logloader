@@ -98,7 +98,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	ApiServer api(config, loader);
+	ApiServer api({config.api_bind, config.api_port}, loader);
 
 	// Serve before connecting, so the UI can say the vehicle is not there yet
 	// rather than failing to load at all.

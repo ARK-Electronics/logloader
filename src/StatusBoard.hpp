@@ -3,17 +3,17 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <functional>
 #include <mutex>
 #include <string>
 
 // What logloader is doing right now, shared between the worker loops that write
 // it and the API server that streams it out.
 //
+// Progress during a transfer is the one thing the database does not hold: it
+// changes several times a second and is worthless after a restart.
+//
 // Every change bumps a revision, so a reader can block until something actually
-// happened instead of polling. Progress during a transfer is the one thing the
-// database does not hold: it changes many times a second and is worthless after
-// a restart.
+// happened instead of polling.
 class StatusBoard
 {
 public:
@@ -31,14 +31,20 @@ public:
 		int64_t uploading_id {0};
 		std::string uploading_target;
 
-		// Bumped on every change; a reader compares against what it last saw.
 		uint64_t revision {0};
 	};
 
 	Snapshot get() const;
 
-	// Applies mutate under the lock, then bumps the revision and wakes readers.
-	void update(const std::function<void(Snapshot&)>& mutate);
+	void set_connected(bool connected);
+	void set_armed(bool armed);
+	void set_ftp(bool available, const std::string& log_root);
+	void set_download(int64_t id, uint32_t transferred, uint32_t total);
+	void set_upload(int64_t id, const std::string& target);
+
+	// Wakes readers without changing anything, for a caller that has just
+	// written to the database and wants the change streamed out now.
+	void notify();
 
 	// Blocks until the revision moves past known_revision or the timeout
 	// expires, then returns the current snapshot either way.
@@ -49,6 +55,8 @@ public:
 	bool stopped() const;
 
 private:
+	void bump();
+
 	mutable std::mutex _mutex;
 	mutable std::condition_variable _cv;
 	Snapshot _snapshot;

@@ -13,6 +13,9 @@ class UploadTarget
 public:
 	enum class Outcome {
 		Success,
+		// The local copy is gone or empty. Nothing is wrong with the log itself,
+		// so the caller should fetch it again rather than give up on it.
+		Missing,
 		// The server will not take this log however often it is asked.
 		Rejected,
 		// The account is not authorized (yet). The log is fine; every other

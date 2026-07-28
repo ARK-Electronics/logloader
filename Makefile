@@ -1,15 +1,21 @@
 PROJECT_NAME="logloader"
 
 all:
-	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
-	@cmake -Bbuild -H. -DDEBUG_BUILD=OFF; cmake --build build -j$(nproc)
+	@cmake -Bbuild -S. -DCMAKE_BUILD_TYPE=Release; cmake --build build -j$(nproc)
 	@size build/${PROJECT_NAME}
 
 debug:
-	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
-	@cmake -Bbuild -H. -DDEBUG_BUILD=ON; cmake --build build -j$(nproc)
+	@cmake -Bbuild -S. -DCMAKE_BUILD_TYPE=Debug; cmake --build build -j$(nproc)
 	@size build/${PROJECT_NAME}
-	@echo "Debug build with logging enabled"
+
+# Separate from the build on purpose: a `make` that rewrites your sources cannot
+# run from a read-only checkout and makes the build non-reproducible.
+format:
+	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
+
+check-format:
+	@astyle --dry-run --formatted --options=astylerc src/*.cpp,*.hpp | grep Formatted \
+		&& { echo "run 'make format'"; exit 1; } || echo "formatting OK"
 
 install:
 	@bash install.sh
@@ -18,4 +24,4 @@ clean:
 	@rm -rf build
 	@echo "All build artifacts removed"
 
-.PHONY: all debug install clean
+.PHONY: all debug format check-format install clean

@@ -50,7 +50,6 @@ private:
 bool execute(sqlite3* db, const std::string& sql);
 
 bool table_exists(sqlite3* db, const std::string& table);
-bool column_exists(sqlite3* db, const std::string& table, const std::string& column);
 
 // Rolls back unless commit() is called, so an early return cannot leave a
 // half-applied multi-statement change behind.

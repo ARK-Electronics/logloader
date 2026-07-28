@@ -76,6 +76,12 @@ private:
 
 	static constexpr size_t kMaxDataLength = 239;
 
+	// A directory this large is a server that is not honouring the offset. Both
+	// the entry list and the round trips are driven by remote input, so both
+	// need a ceiling.
+	static constexpr size_t kMaxEntries = 20000;
+	static constexpr int kMaxRoundTrips = 2000;
+
 	// mavlink_file_transfer_protocol_t.payload is 251 bytes: this 12 byte
 	// header followed by kMaxDataLength bytes of data.
 	struct __attribute__((packed)) PayloadHeader {
@@ -92,7 +98,22 @@ private:
 
 	static_assert(sizeof(PayloadHeader) == 251, "PayloadHeader must fill the FILE_TRANSFER_PROTOCOL payload");
 
-	void handle_message(const mavlink_message_t& message);
+	// Everything the subscription callback touches. Held by shared_ptr and
+	// captured weakly, because MAVSDK removes a message handler asynchronously
+	// and does not drain the callbacks it has already queued: a reply can
+	// arrive after this object is gone, which on shutdown mid-transfer it will.
+	struct State {
+		std::mutex mutex;
+		std::condition_variable cv;
+		std::optional<PayloadHeader> reply;
+		uint16_t expected_seq {0};
+		std::optional<uint8_t> expected_req_opcode;
+		bool should_exit {false};
+	};
+
+	static void handle_message(State& state, uint8_t our_sysid, uint8_t our_compid,
+				   const mavlink_message_t& message);
+
 	bool transact(uint8_t opcode, const std::string& path, uint32_t offset, PayloadHeader& reply);
 	void send_request(const PayloadHeader& request);
 
@@ -101,14 +122,8 @@ private:
 	std::shared_ptr<mavsdk::MavlinkPassthrough> _passthrough;
 	mavsdk::MavlinkPassthrough::MessageHandle _subscription;
 
-	std::mutex _mutex;
-	std::condition_variable _cv;
-	std::optional<PayloadHeader> _reply;
-	uint16_t _expected_seq {0};
-	std::optional<uint8_t> _expected_req_opcode;
+	std::shared_ptr<State> _state {std::make_shared<State>()};
 
 	uint16_t _seq {0};
 	bool _with_time_supported {true}; // Optimistic until the server NAKs it
-
-	std::atomic<bool> _should_exit {false};
 };

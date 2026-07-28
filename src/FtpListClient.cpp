@@ -19,9 +19,16 @@ constexpr auto kReplyTimeout = std::chrono::milliseconds(2000);
 FtpListClient::FtpListClient(std::shared_ptr<mavsdk::System> system)
 	: _passthrough(std::make_shared<mavsdk::MavlinkPassthrough>(system))
 {
+	// Weak, and the ids are copied rather than reached through this: the
+	// callback may outlive the client. See State.
+	const uint8_t our_sysid = _passthrough->get_our_sysid();
+	const uint8_t our_compid = _passthrough->get_our_compid();
+
 	_subscription = _passthrough->subscribe_message(MAVLINK_MSG_ID_FILE_TRANSFER_PROTOCOL,
-	[this](const mavlink_message_t& message) {
-		handle_message(message);
+	[weak = std::weak_ptr<State>(_state), our_sysid, our_compid](const mavlink_message_t& message) {
+		if (auto state = weak.lock()) {
+			handle_message(*state, our_sysid, our_compid, message);
+		}
 	});
 }
 
@@ -32,8 +39,14 @@ FtpListClient::~FtpListClient()
 
 void FtpListClient::stop()
 {
-	_should_exit = true;
-	_cv.notify_all();
+	{
+		// Under the lock, or a notify landing between the waiter's predicate
+		// check and its block is lost and shutdown waits out the full timeout.
+		std::lock_guard<std::mutex> lock(_state->mutex);
+		_state->should_exit = true;
+	}
+
+	_state->cv.notify_all();
 }
 
 void FtpListClient::reset_sessions()
@@ -48,18 +61,19 @@ void FtpListClient::reset_sessions()
 	}
 }
 
-void FtpListClient::handle_message(const mavlink_message_t& message)
+void FtpListClient::handle_message(State& state, uint8_t our_sysid, uint8_t our_compid,
+				   const mavlink_message_t& message)
 {
 	mavlink_file_transfer_protocol_t ftp;
 	mavlink_msg_file_transfer_protocol_decode(&message, &ftp);
 
 	// The transfer runs unicast: the server addresses its replies to whoever
 	// asked. Anything not for us is another client's traffic.
-	if (ftp.target_system != _passthrough->get_our_sysid()) {
+	if (ftp.target_system != our_sysid) {
 		return;
 	}
 
-	if (ftp.target_component != _passthrough->get_our_compid() && ftp.target_component != 0) {
+	if (ftp.target_component != our_compid && ftp.target_component != 0) {
 		return;
 	}
 
@@ -70,17 +84,17 @@ void FtpListClient::handle_message(const mavlink_message_t& message)
 		return;
 	}
 
-	std::lock_guard<std::mutex> lock(_mutex);
+	std::lock_guard<std::mutex> lock(state.mutex);
 
 	// Match against the in-flight request so replies to MAVSDK's Ftp plugin
 	// (which shares our system and component id) are ignored.
-	if (!_expected_req_opcode.has_value() || payload.req_opcode != _expected_req_opcode.value()
-	    || payload.seq_number != _expected_seq) {
+	if (!state.expected_req_opcode.has_value() || payload.req_opcode != state.expected_req_opcode.value()
+	    || payload.seq_number != state.expected_seq) {
 		return;
 	}
 
-	_reply = payload;
-	_cv.notify_all();
+	state.reply = payload;
+	state.cv.notify_all();
 }
 
 void FtpListClient::send_request(const PayloadHeader& request)
@@ -109,35 +123,42 @@ bool FtpListClient::transact(uint8_t opcode, const std::string& path, uint32_t o
 	request.size = static_cast<uint8_t>(path.size() + 1);
 	std::memcpy(request.data, path.c_str(), path.size() + 1);
 
-	for (int attempt = 0; attempt < kMaxAttempts && !_should_exit; attempt++) {
+	State& state = *_state;
+
+	for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
 		{
-			std::lock_guard<std::mutex> lock(_mutex);
-			_reply.reset();
+			std::lock_guard<std::mutex> lock(state.mutex);
+
+			if (state.should_exit) {
+				return false;
+			}
+
+			state.reply.reset();
 			// Servers reply with the request sequence number plus one, and
 			// answer a retransmission (same sequence number) from their
 			// duplicate-reply cache, so retries reuse the packet as-is.
-			_expected_seq = static_cast<uint16_t>(request.seq_number + 1);
-			_expected_req_opcode = opcode;
+			state.expected_seq = static_cast<uint16_t>(request.seq_number + 1);
+			state.expected_req_opcode = opcode;
 		}
 
 		send_request(request);
 
-		std::unique_lock<std::mutex> lock(_mutex);
+		std::unique_lock<std::mutex> lock(state.mutex);
 
-		if (_cv.wait_for(lock, kReplyTimeout, [this] { return _reply.has_value() || _should_exit.load(); })) {
-			_expected_req_opcode.reset();
+		if (state.cv.wait_for(lock, kReplyTimeout, [&state] { return state.reply.has_value() || state.should_exit; })) {
+			state.expected_req_opcode.reset();
 
-			if (_should_exit || !_reply.has_value()) {
+			if (!state.reply.has_value()) {
 				return false;
 			}
 
-			reply = _reply.value();
+			reply = state.reply.value();
 			return true;
 		}
 	}
 
-	std::lock_guard<std::mutex> lock(_mutex);
-	_expected_req_opcode.reset();
+	std::lock_guard<std::mutex> lock(state.mutex);
+	state.expected_req_opcode.reset();
 
 	return false;
 }
@@ -207,13 +228,14 @@ FtpListClient::Result FtpListClient::list_directory(const std::string& path, std
 
 	uint32_t offset = 0;
 
-	while (!_should_exit) {
+	for (int round_trip = 0; round_trip < kMaxRoundTrips; round_trip++) {
 		const uint8_t opcode = _with_time_supported ? kOpcodeListDirectoryWithTime : kOpcodeListDirectory;
 
 		PayloadHeader reply;
 
 		if (!transact(opcode, path, offset, reply)) {
-			return _should_exit ? Result::Stopped : Result::Timeout;
+			std::lock_guard<std::mutex> lock(_state->mutex);
+			return _state->should_exit ? Result::Stopped : Result::Timeout;
 		}
 
 		if (reply.opcode == kOpcodeNak) {
@@ -245,7 +267,13 @@ FtpListClient::Result FtpListClient::list_directory(const std::string& path, std
 		if (offset == previous_offset) {
 			return Result::Success;
 		}
+
+		if (entries.size() > kMaxEntries) {
+			LOG_WARN("Listing of " << path << " exceeded " << kMaxEntries << " entries, giving up");
+			return Result::ProtocolError;
+		}
 	}
 
-	return Result::Stopped;
+	LOG_WARN("Listing of " << path << " did not finish in " << kMaxRoundTrips << " requests");
+	return Result::ProtocolError;
 }

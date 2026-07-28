@@ -30,8 +30,8 @@ struct Config {
 	std::string logs_directory;
 
 	bool api_enabled {true};
-	std::string api_bind;
-	uint16_t api_port {5010};
+	std::string api_bind {"127.0.0.1"};
+	uint16_t api_port {3005};
 
 	// Queue a log for download as soon as it appears in a listing. This is what
 	// picks up the log a flight just produced.

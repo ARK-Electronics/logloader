@@ -1,9 +1,11 @@
 #include "UploadTarget.hpp"
 #include "Log.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 // CPPHTTPLIB_OPENSSL_SUPPORT is set for the whole target in CMakeLists.txt.
 // Defining it per-file would give translation units different definitions of
@@ -94,31 +96,30 @@ UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 	std::error_code ec;
 
 	if (!fs::exists(file_path, ec)) {
-		return {Outcome::Rejected, 0, "local file is missing: " + file_path, ""};
+		return {Outcome::Missing, 0, "local file is missing: " + file_path, ""};
 	}
 
 	const auto size = fs::file_size(file_path, ec);
 
 	if (ec || size == 0) {
-		return {Outcome::Rejected, 0, "local file is empty: " + file_path, ""};
+		return {Outcome::Missing, 0, "local file is empty: " + file_path, ""};
 	}
 
 	if (!reachable()) {
 		return {Outcome::Unreachable, 0, "server unreachable", ""};
 	}
 
-	std::ifstream file(file_path, std::ios::binary);
+	auto file = std::make_shared<std::ifstream>(file_path, std::ios::binary);
 
-	if (!file) {
-		return {Outcome::Rejected, 0, "cannot open local file: " + file_path, ""};
+	if (!*file) {
+		return {Outcome::Missing, 0, "cannot open local file: " + file_path, ""};
 	}
 
 	const std::string name = fs::path(file_path).filename().string();
-	std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 
 	// Flight Review reads every one of these fields off the form; the ones it
 	// does not use for an automated upload still have to be present.
-	httplib::MultipartFormDataItems items = {
+	const httplib::MultipartFormDataItems fields = {
 		{"type", _config.public_logs ? "flightreport" : "personal", "", ""},
 		{"description", "Uploaded by logloader", "", ""},
 		{"feedback", "", "", ""},
@@ -128,8 +129,22 @@ UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 		{"rating", "", "", ""},
 		{"windSpeed", "", "", ""},
 		{"public", _config.public_logs ? "true" : "false", "", ""},
-		{"filearg", std::move(content), name, "application/octet-stream"},
 	};
+
+	// The log is streamed off disk rather than assembled in memory. httplib's
+	// MultipartFormDataItems overload builds the whole body as a std::string
+	// first, so a 400 MB ArduPilot log would need the better part of a gigabyte
+	// on a companion computer that does not have it.
+	const std::string boundary = httplib::detail::make_multipart_data_boundary();
+	const std::string content_type = httplib::detail::serialize_multipart_formdata_get_content_type(boundary);
+
+	const httplib::MultipartFormData log_part {"filearg", "", name, "application/octet-stream"};
+	const std::string prologue = httplib::detail::serialize_multipart_formdata(fields, boundary, false)
+				     + httplib::detail::serialize_multipart_formdata_item_begin(log_part, boundary);
+	const std::string epilogue = httplib::detail::serialize_multipart_formdata_item_end()
+				     + httplib::detail::serialize_multipart_formdata_finish(boundary);
+
+	const size_t body_size = prologue.size() + size + epilogue.size();
 
 	httplib::Headers headers;
 	const bool use_api_key = !_config.api_key.empty();
@@ -148,7 +163,36 @@ UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 	client.set_write_timeout(300, 0);
 	client.set_follow_location(false);
 
-	const httplib::Result response = client.Post("/upload", headers, items);
+	// Content-Length is known up front, so this stays a plain request rather
+	// than a chunked one -- Flight Review's multipart reader wants the length.
+	auto provider = [prologue, epilogue, file, size](size_t offset, size_t, httplib::DataSink & sink) {
+		constexpr size_t kChunk = 64 * 1024;
+
+		if (offset < prologue.size()) {
+			const size_t n = std::min(kChunk, prologue.size() - offset);
+			return sink.write(prologue.data() + offset, n);
+		}
+
+		const size_t in_file = offset - prologue.size();
+
+		if (in_file < size) {
+			const size_t n = std::min(kChunk, static_cast<size_t>(size) - in_file);
+			std::vector<char> buffer(n);
+			file->seekg(static_cast<std::streamoff>(in_file));
+
+			if (!file->read(buffer.data(), static_cast<std::streamsize>(n))) {
+				return false;
+			}
+
+			return sink.write(buffer.data(), n);
+		}
+
+		const size_t in_epilogue = in_file - size;
+		return sink.write(epilogue.data() + in_epilogue, epilogue.size() - in_epilogue);
+	};
+
+	const httplib::Result response = client.Post("/upload", headers, body_size, provider, content_type);
+
 
 	if (!response) {
 		// The connection died mid-transfer; the server may or may not have the

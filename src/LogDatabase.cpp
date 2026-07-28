@@ -23,10 +23,12 @@ const std::string kLogColumns =
 	"l.download_requested, l.present, l.download_failures, l.last_error, l.discovered_at";
 
 // Newest first. Logs whose time the vehicle cannot report sort after the ones
-// it can, and fall back to the path: ArduPilot names logs with a bare counter,
-// so the longer name is the later one (100.BIN comes after 99.BIN).
+// it can; among those, a log we watched appear is newer than one that was
+// already there. The name is the last resort: ArduPilot numbers logs, so the
+// longer name is the later one (100.BIN after 99.BIN) -- until the counter
+// wraps at LOG_MAX_FILES, which is exactly why discovered_at comes first.
 const std::string kNewestFirst =
-	"(l.time_utc IS NULL) ASC, l.time_utc DESC, LENGTH(l.path) DESC, l.path DESC";
+	"(l.time_utc IS NULL) ASC, l.time_utc DESC, l.discovered_at DESC, LENGTH(l.path) DESC, l.path DESC";
 
 int64_t now_epoch()
 {
@@ -46,6 +48,18 @@ std::optional<int64_t> parse_iso8601_utc(const std::string& text)
 	tm.tm_mon -= 1;
 
 	return static_cast<int64_t>(timegm(&tm));
+}
+
+// A failed commit must not look like a successful one: the caller would go on
+// to act on rows that were rolled out from under it.
+bool commit_or_warn(sqlite::Transaction& transaction, const char* what)
+{
+	if (transaction.commit()) {
+		return true;
+	}
+
+	LOG_ERROR("Could not commit " << what << "; the change was rolled back");
+	return false;
 }
 
 LogDatabase::Entry row_to_entry(const sqlite::Statement& stmt)
@@ -77,6 +91,8 @@ LogDatabase::LogDatabase(const std::string& db_path, const std::string& logs_dir
 		return;
 	}
 
+	_ok = true;
+
 	import_legacy_databases(db_path);
 	_has_legacy_rows = sqlite::table_exists(_db, "legacy_logs");
 }
@@ -84,7 +100,8 @@ LogDatabase::LogDatabase(const std::string& db_path, const std::string& logs_dir
 LogDatabase::~LogDatabase()
 {
 	if (_db != nullptr) {
-		sqlite3_close(_db);
+		// _v2 so a straggling statement leaks nothing and the handle still closes.
+		sqlite3_close_v2(_db);
 	}
 }
 
@@ -208,8 +225,11 @@ std::vector<int64_t> LogDatabase::sync_index(const std::vector<Discovered>& logs
 		}
 	}
 
-	transaction.commit();
+	if (!commit_or_warn(transaction, "the vehicle index")) {
+		return {};
+	}
 
+	_revision++;
 	return inserted;
 }
 
@@ -240,17 +260,18 @@ void LogDatabase::set_first_index_seen()
 // Intent
 // -------------------------------------------------------------------------
 
-void LogDatabase::request_download(const std::vector<int64_t>& ids, const std::vector<std::string>& targets)
+void LogDatabase::request(const std::vector<int64_t>& ids, const std::vector<std::string>& targets)
 {
 	std::lock_guard<std::mutex> lock(_mutex);
 	sqlite::Transaction transaction(_db);
 
 	for (int64_t id : ids) {
-		// Clearing the failure count gives an explicitly re-requested log a
-		// fresh place in the queue instead of the back of it.
+		// An upload needs the file, so asking for either implies fetching it.
+		// Clearing the failure count gives an explicitly requested log a fresh
+		// place in the queue instead of the back of it.
 		sqlite::Statement stmt(_db,
 				       "UPDATE logs SET download_requested = 1, download_failures = 0, last_error = '' "
-				       "WHERE id = ? AND downloaded = 0");
+				       "WHERE id = ? AND (downloaded = 0 OR local_path = '')");
 		stmt.bind(1, id);
 		stmt.execute();
 
@@ -263,31 +284,9 @@ void LogDatabase::request_download(const std::vector<int64_t>& ids, const std::v
 		}
 	}
 
-	transaction.commit();
-}
-
-void LogDatabase::request_upload(const std::vector<int64_t>& ids, const std::vector<std::string>& targets)
-{
-	std::lock_guard<std::mutex> lock(_mutex);
-	sqlite::Transaction transaction(_db);
-
-	for (int64_t id : ids) {
-		// An upload needs the file, so asking for one implies fetching it.
-		sqlite::Statement stmt(_db,
-				       "UPDATE logs SET download_requested = 1 WHERE id = ? AND downloaded = 0");
-		stmt.bind(1, id);
-		stmt.execute();
-
-		for (const auto& target : targets) {
-			sqlite::Statement upload(_db,
-						 "UPDATE uploads SET requested = 1, rejected = 0 "
-						 "WHERE log_id = ? AND target = ? AND uploaded = 0");
-			upload.bind(1, id).bind(2, target);
-			upload.execute();
-		}
+	if (commit_or_warn(transaction, "request")) {
+		_revision++;
 	}
-
-	transaction.commit();
 }
 
 void LogDatabase::cancel_requests(const std::vector<int64_t>& ids)
@@ -305,7 +304,9 @@ void LogDatabase::cancel_requests(const std::vector<int64_t>& ids)
 		upload.execute();
 	}
 
-	transaction.commit();
+	if (commit_or_warn(transaction, "cancel")) {
+		_revision++;
+	}
 }
 
 // -------------------------------------------------------------------------
@@ -318,7 +319,7 @@ std::vector<LogDatabase::Entry> LogDatabase::logs_to_download() const
 
 	sqlite::Statement stmt(_db,
 			       "SELECT " + kLogColumns + " FROM logs l "
-			       "WHERE l.download_requested = 1 AND l.downloaded = 0 AND l.present = 1 "
+			       "WHERE l.download_requested = 1 AND (l.downloaded = 0 OR l.local_path = '') AND l.present = 1 "
 			       "ORDER BY l.download_failures ASC, " + kNewestFirst);
 
 	std::vector<Entry> entries;
@@ -365,6 +366,7 @@ void LogDatabase::mark_downloaded(int64_t id, const std::string& local_path)
 			       "download_failures = 0, last_error = '' WHERE id = ?");
 	stmt.bind(1, local_path).bind(2, id);
 	stmt.execute();
+	_revision++;
 }
 
 void LogDatabase::record_download_failure(int64_t id, const std::string& error)
@@ -374,6 +376,7 @@ void LogDatabase::record_download_failure(int64_t id, const std::string& error)
 			       "UPDATE logs SET download_failures = download_failures + 1, last_error = ? WHERE id = ?");
 	stmt.bind(1, error).bind(2, id);
 	stmt.execute();
+	_revision++;
 }
 
 void LogDatabase::mark_uploaded(int64_t id, const std::string& target, const std::string& location)
@@ -384,6 +387,7 @@ void LogDatabase::mark_uploaded(int64_t id, const std::string& target, const std
 			       "updated_at = ? WHERE log_id = ? AND target = ?");
 	stmt.bind(1, location).bind(2, now_epoch()).bind(3, id).bind(4, target);
 	stmt.execute();
+	_revision++;
 }
 
 void LogDatabase::mark_upload_rejected(int64_t id, const std::string& target, const std::string& message)
@@ -394,6 +398,7 @@ void LogDatabase::mark_upload_rejected(int64_t id, const std::string& target, co
 			       "WHERE log_id = ? AND target = ?");
 	stmt.bind(1, message).bind(2, now_epoch()).bind(3, id).bind(4, target);
 	stmt.execute();
+	_revision++;
 }
 
 void LogDatabase::record_upload_failure(int64_t id, const std::string& target, const std::string& message)
@@ -403,6 +408,7 @@ void LogDatabase::record_upload_failure(int64_t id, const std::string& target, c
 			       "UPDATE uploads SET message = ?, updated_at = ? WHERE log_id = ? AND target = ?");
 	stmt.bind(1, message).bind(2, now_epoch()).bind(3, id).bind(4, target);
 	stmt.execute();
+	_revision++;
 }
 
 void LogDatabase::clear_local_file(int64_t id)
@@ -412,6 +418,7 @@ void LogDatabase::clear_local_file(int64_t id)
 			       "UPDATE logs SET downloaded = 0, local_path = '', download_requested = 0 WHERE id = ?");
 	stmt.bind(1, id);
 	stmt.execute();
+	_revision++;
 }
 
 // -------------------------------------------------------------------------
@@ -488,6 +495,56 @@ bool LogDatabase::local_path_in_use(const std::string& local_path, int64_t exclu
 	stmt.bind(1, local_path).bind(2, excluding_id);
 
 	return stmt.step() && stmt.column_int(0) > 0;
+}
+
+std::vector<int64_t> LogDatabase::ids_not_downloaded() const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+
+	sqlite::Statement stmt(_db,
+			       "SELECT l.id FROM logs l WHERE l.present = 1 AND (l.downloaded = 0 OR l.local_path = '') ORDER BY " + kNewestFirst);
+
+	std::vector<int64_t> ids;
+
+	while (stmt.step()) {
+		ids.push_back(stmt.column_int(0));
+	}
+
+	return ids;
+}
+
+std::vector<int64_t> LogDatabase::ids_not_uploaded(const std::vector<std::string>& targets) const
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	std::vector<int64_t> ids;
+
+	if (targets.empty()) {
+		return ids;
+	}
+
+	std::string placeholders = "?";
+
+	for (size_t i = 1; i < targets.size(); i++) {
+		placeholders += ",?";
+	}
+
+	// Still on the vehicle or already fetched -- either way the file can be had.
+	sqlite::Statement stmt(_db,
+			       "SELECT DISTINCT l.id FROM logs l "
+			       "JOIN uploads u ON u.log_id = l.id "
+			       "WHERE u.target IN (" + placeholders + ") AND u.uploaded = 0 "
+			       "AND (l.downloaded = 1 OR l.present = 1) "
+			       "ORDER BY " + kNewestFirst);
+
+	for (size_t i = 0; i < targets.size(); i++) {
+		stmt.bind(static_cast<int>(i) + 1, targets[i]);
+	}
+
+	while (stmt.step()) {
+		ids.push_back(stmt.column_int(0));
+	}
+
+	return ids;
 }
 
 void LogDatabase::attach_uploads(std::vector<Entry>& entries) const
