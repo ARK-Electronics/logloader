@@ -3,12 +3,15 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <sqlite3.h>
+
+#include "LegacyImport.hpp"
 
 // The inventory of the vehicle's logs and what logloader intends to do with
 // each one. There is exactly one of these; upload targets do not own state.
@@ -67,17 +70,20 @@ public:
 
 	bool ok() const { return _ok; }
 
+	struct SyncResult {
+		// Rows this call created, in the order the vehicle listed them.
+		std::vector<int64_t> inserted;
+		size_t present_count {0};
+		// This call reconciled the first listing that had anything in it. On a
+		// fresh database every log looks new, and queueing them all is exactly
+		// what must not happen.
+		bool first_ever {false};
+	};
+
 	// Index -------------------------------------------------------------
 	// Reconciles the table with a complete vehicle listing: inserts logs not
-	// seen before, and marks every row present or absent. Returns the ids of
-	// the rows this call created, in the order the vehicle listed them.
-	std::vector<int64_t> sync_index(const std::vector<Discovered>& logs);
-
-	// False until the first complete listing has been reconciled. The
-	// difference matters: on a fresh database every log looks new, and
-	// queueing them all is exactly what we must not do.
-	bool first_index_seen() const;
-	void set_first_index_seen();
+	// seen before, and marks every row present or absent.
+	SyncResult sync_index(const std::vector<Discovered>& logs);
 
 	// Bumped by every write. A reader that has already rendered a given
 	// revision knows the log list has not moved since.
@@ -121,13 +127,6 @@ public:
 private:
 	bool initialize(const std::string& db_path);
 	bool create_schema();
-	// Folds the pre-overhaul per-server databases into this one.
-	void import_legacy_databases(const std::string& db_path);
-	void import_legacy_database(const std::string& file, const std::string& target);
-	// Claims the state of a matching pre-FTP row, which was keyed on a
-	// timestamp that MAVLink FTP cannot reproduce, hence the match by size.
-	void grandfather(int64_t id, const Discovered& log);
-
 	void attach_uploads(std::vector<Entry>& entries) const;
 	void ensure_upload_rows(int64_t id);
 
@@ -137,7 +136,6 @@ private:
 	// Opening the file is not enough: the schema still has to exist, and a
 	// read-only or full data directory fails only at CREATE TABLE.
 	bool _ok {false};
-	std::string _logs_directory;
 	std::vector<std::string> _targets;
-	bool _has_legacy_rows {false};
+	std::unique_ptr<legacy::Importer> _legacy;
 };

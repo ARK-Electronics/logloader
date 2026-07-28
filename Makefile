@@ -12,9 +12,10 @@ debug:
 # run from a read-only checkout and makes the build non-reproducible.
 format:
 	@astyle --quiet --options=astylerc src/*.cpp,*.hpp
+	@astyle --quiet --options=astylerc "tests/*.cpp,*.hpp"
 
 check-format:
-	@astyle --dry-run --formatted --options=astylerc src/*.cpp,*.hpp | grep Formatted \
+	@{ astyle --dry-run --formatted --options=astylerc src/*.cpp,*.hpp; astyle --dry-run --formatted --options=astylerc "tests/*.cpp,*.hpp"; } | grep Formatted \
 		&& { echo "run 'make format'"; exit 1; } || echo "formatting OK"
 
 install:

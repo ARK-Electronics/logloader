@@ -30,6 +30,7 @@ add_executable(${PROJECT_NAME}
     src/Config.cpp
     src/FtpListClient.cpp
     src/FtpLogFetcher.cpp
+    src/LegacyImport.cpp
     src/Log.cpp
     src/LogDatabase.cpp
     src/LogLoader.cpp
@@ -54,3 +55,21 @@ target_link_libraries(${PROJECT_NAME}
     OpenSSL::Crypto
     MAVSDK::mavsdk
     ${SQLite3_LIBRARIES})
+
+# The database is the one module worth testing without a vehicle: it holds every
+# decision logloader makes, and the legacy import runs once against real user
+# data and cannot be un-run.
+option(BUILD_TESTING "Build the tests" OFF)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test_log_database
+        tests/test_log_database.cpp
+        src/LegacyImport.cpp
+        src/Log.cpp
+        src/LogDatabase.cpp
+        src/Sqlite.cpp)
+    target_include_directories(test_log_database PRIVATE src)
+    target_include_directories(test_log_database SYSTEM PRIVATE ${SQLite3_INCLUDE_DIRS})
+    target_link_libraries(test_log_database Threads::Threads ${SQLite3_LIBRARIES})
+    add_test(NAME log_database COMMAND test_log_database)
+endif()

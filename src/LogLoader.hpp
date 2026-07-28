@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -60,11 +61,11 @@ private:
 
 	// Reconciles the vehicle listing into the database. False when the vehicle
 	// could not be listed, in which case nothing is assumed about what it has.
-	bool refresh_index(std::vector<int64_t>& new_ids, size_t& stable_count);
+	std::optional<LogDatabase::SyncResult> refresh_index();
 
 	// Decides what, if anything, to fetch without being asked. This is the
 	// guard against a freshly-installed companion pulling a whole SD card.
-	void apply_auto_policy(const std::vector<int64_t>& new_ids, size_t stable_count);
+	void apply_auto_policy(const LogDatabase::SyncResult& sync);
 
 	void download_pending();
 	bool download(const LogDatabase::Entry& entry, const FtpLogFetcher::RemoteLog& remote);

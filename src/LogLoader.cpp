@@ -207,11 +207,8 @@ void LogLoader::index_loop()
 			continue;
 		}
 
-		std::vector<int64_t> new_ids;
-		size_t stable_count = 0;
-
-		if (refresh_index(new_ids, stable_count)) {
-			apply_auto_policy(new_ids, stable_count);
+		if (const auto sync = refresh_index(); sync.has_value()) {
+			apply_auto_policy(sync.value());
 			download_pending();
 		}
 
@@ -231,11 +228,11 @@ void LogLoader::index_loop()
 	LOG_DEBUG("Index loop finished");
 }
 
-bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_count)
+std::optional<LogDatabase::SyncResult> LogLoader::refresh_index()
 {
 	if (!_ftp->refresh()) {
 		_status->set_ftp(false, "");
-		return false;
+		return std::nullopt;
 	}
 
 	std::vector<LogDatabase::Discovered> discovered;
@@ -252,8 +249,7 @@ bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_coun
 		discovered.push_back({log.relative_path, log.size_bytes, log.time_utc});
 	}
 
-	stable_count = discovered.size();
-	new_ids = _database.sync_index(discovered);
+	const LogDatabase::SyncResult sync = _database.sync_index(discovered);
 
 	const std::string root = _ftp->root();
 	_status->set_ftp(true, root);
@@ -261,28 +257,11 @@ bool LogLoader::refresh_index(std::vector<int64_t>& new_ids, size_t& stable_coun
 	LOG_DEBUG("Indexed " << discovered.size() << " logs in " << root
 		  << (growing > 0 ? " (" + std::to_string(growing) + " still being written)" : ""));
 
-	return true;
+	return sync;
 }
 
-void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t stable_count)
+void LogLoader::apply_auto_policy(const LogDatabase::SyncResult& sync)
 {
-	// A log only counts once two listings agree on its size, so the very first
-	// listing after startup legitimately reconciles nothing. Calling that the
-	// first index would make the next one -- the vehicle's entire history --
-	// look like logs that appeared while we were watching, which is precisely
-	// the bulk download this policy exists to prevent.
-	if (stable_count == 0) {
-		return;
-	}
-
-	const bool first_index = !_database.first_index_seen();
-
-	if (first_index) {
-		// Recorded even when nothing is queued below, so that turning automatic
-		// fetching on later does not then treat the whole card as new.
-		_database.set_first_index_seen();
-	}
-
 	if (!_config.auto_download) {
 		return;
 	}
@@ -290,9 +269,9 @@ void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t st
 	const std::vector<std::string> upload_to =
 		_config.auto_upload ? enabled_target_names() : std::vector<std::string> {};
 
-	if (first_index) {
+	if (sync.first_ever) {
 		if (!_config.download_latest_on_first_start) {
-			LOG("First index: " << stable_count << " logs on the vehicle, none queued "
+			LOG("First index: " << sync.present_count << " logs on the vehicle, none queued "
 			    "(download.latest_on_first_start is off)");
 			return;
 		}
@@ -301,33 +280,33 @@ void LogLoader::apply_auto_policy(const std::vector<int64_t>& new_ids, size_t st
 
 		if (newest.has_value()) {
 			_database.request({newest.value()}, upload_to);
-			LOG("First index: " << stable_count << " logs on the vehicle, queueing only the newest. "
-			    "Use the ARK-OS Logs page to fetch any of the others.");
+			LOG("First index: " << sync.present_count << " logs on the vehicle, queueing only the "
+			    "newest. Use the ARK-OS Logs page to fetch any of the others.");
 		}
 
 		return;
 	}
 
-	if (new_ids.empty()) {
+	if (sync.inserted.empty()) {
 		return;
 	}
 
 	// More than a flight's worth appearing at once means the vehicle is showing
 	// us a card we have not seen, not that it flew ten times in 30 seconds.
-	if (_config.max_auto_queue > 0 && static_cast<int>(new_ids.size()) > _config.max_auto_queue) {
-		const auto newest = _database.newest_log_id(new_ids);
+	if (_config.max_auto_queue > 0 && static_cast<int>(sync.inserted.size()) > _config.max_auto_queue) {
+		const auto newest = _database.newest_log_id(sync.inserted);
 
 		if (newest.has_value()) {
 			_database.request({newest.value()}, upload_to);
 		}
 
-		LOG_WARN(new_ids.size() << " new logs appeared at once, which looks like a different SD card. "
+		LOG_WARN(sync.inserted.size() << " new logs appeared at once, which looks like a different SD card. "
 			 "Queued only the newest; use the ARK-OS Logs page for the rest.");
 		return;
 	}
 
-	_database.request(new_ids, upload_to);
-	LOG("Queued " << new_ids.size() << (new_ids.size() == 1 ? " new log" : " new logs"));
+	_database.request(sync.inserted, upload_to);
+	LOG("Queued " << sync.inserted.size() << (sync.inserted.size() == 1 ? " new log" : " new logs"));
 }
 
 // -------------------------------------------------------------------------
