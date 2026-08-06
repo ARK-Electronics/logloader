@@ -49,6 +49,13 @@ UploadTarget::UploadTarget(const UploadTargetConfig& config)
 	: _config(config)
 {
 	_config.url = with_scheme(_config.url);
+
+	// httplib::Client takes scheme://host:port and nothing more; a trailing
+	// slash -- which the old flat config format shipped with -- fails its parse
+	// and every request reports the server unreachable.
+	while (!_config.url.empty() && _config.url.back() == '/') {
+		_config.url.pop_back();
+	}
 }
 
 bool UploadTarget::reachable()
