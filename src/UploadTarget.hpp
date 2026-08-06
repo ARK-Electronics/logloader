@@ -55,4 +55,10 @@ private:
 	static constexpr auto kUnreachableCooldown = std::chrono::seconds(60);
 	std::chrono::steady_clock::time_point _unreachable_until {};
 	bool _reported_unreachable {false};
+
+	// 401/403 is a stable state -- the account stays unauthorized until a human
+	// does something -- and each attempt posts the whole log just to be told no
+	// again, so it gets a much longer cooldown than a connection failure.
+	static constexpr auto kUnauthorizedCooldown = std::chrono::minutes(5);
+	std::chrono::steady_clock::time_point _unauthorized_until {};
 };

@@ -699,8 +699,8 @@ void LogLoader::upload_pending(UploadTarget& target)
 		case UploadTarget::Outcome::Unauthorized:
 			LOG_WARN(target.name() << " will not accept uploads from this account ("
 				 << result.status_code << "): " << result.message);
-			LOG_WARN("Pausing " << target.name() << " uploads for this cycle; they resume "
-				 "on their own once the account is authorized");
+			LOG_WARN("Pausing " << target.name() << " uploads; retrying every few minutes "
+				 "until the account is authorized");
 			_database.record_upload_failure(entry.id, target.name(), result.message);
 			notify();
 			return;

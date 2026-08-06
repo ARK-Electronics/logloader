@@ -16,7 +16,7 @@ The vehicle is never polled. It is listed on exactly three occasions: when the c
 
 Two further guards fall out of the same idea. A log is only considered at all once two consecutive listings agree on its size, so the log being written right now is never fetched at a size it will not keep. And if a single listing turns up more than `download.max_auto_queue` new logs, that is a card logloader has not seen rather than a flight that just happened, so it queues only the newest and says so.
 
-Downloading and uploading are suspended while the vehicle is armed, and uploads only touch the network while something is pending — a server that is unreachable is probed at most once a minute until it answers.
+Downloading and uploading are suspended while the vehicle is armed, and uploads only touch the network while something is pending — a server that is unreachable is probed at most once a minute until it answers, and one that answers 401/403 is left alone for five minutes at a time, since re-posting a whole log just to be told no again helps nobody.
 
 ### HTTP API
 

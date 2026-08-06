@@ -100,6 +100,13 @@ bool UploadTarget::reachable()
 
 UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 {
+	// Reported once when the 401/403 arrived; repeating a multi-megabyte POST
+	// every upload interval just to be told no again is the spam this daemon
+	// exists to avoid. Unreachable keeps the caller quiet and the log queued.
+	if (std::chrono::steady_clock::now() < _unauthorized_until) {
+		return {Outcome::Unreachable, 0, "waiting out an unauthorized response", ""};
+	}
+
 	std::error_code ec;
 
 	if (!fs::exists(file_path, ec)) {
@@ -223,6 +230,7 @@ UploadTarget::Result UploadTarget::upload(const std::string& file_path)
 	const std::string detail = one_line(response->body);
 
 	if (status == 401 || status == 403) {
+		_unauthorized_until = std::chrono::steady_clock::now() + kUnauthorizedCooldown;
 		return {Outcome::Unauthorized, status, detail.empty() ? "not authorized" : detail, ""};
 	}
 
