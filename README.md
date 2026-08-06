@@ -1,72 +1,144 @@
 ![image](logloader_logo.png)
 
-Downloads PX4 log files (.ulg) and uploads them to a local server and optionally a remote server.
+Downloads flight logs from the vehicle over MAVLink FTP and uploads them to a local Flight Review and, optionally, a remote one. Works with PX4 (`.ulg`) and ArduPilot (`.BIN`).
 
-The **config.toml** file is used to configure the program settings.
+### What it fetches, and when
 
-### Behavior
-Downloading and uploading will only occur while the vehicle is not armed. Downloading and uploading operations are performed in separate threads. An sqlite database per server is used to track log file download/upload status.
+logloader does **not** try to mirror the SD card. A companion computer that is powered on for the first time, or one whose database has been reset, would otherwise pull and upload the vehicle's entire history over a link that has better things to do.
+
+The rule is:
+
+- **A log that appears while logloader is watching** is downloaded and uploaded. In practice that means the log a flight just produced.
+- **On a database that has never seen this vehicle**, only the most recent log is taken. Everything else is left alone.
+- **Anything else happens because it was asked for**, from the ARK-OS Logs page or the HTTP API below.
+
+The vehicle is never polled. It is listed on exactly three occasions: when the connection to the autopilot comes up (or comes back — a reboot means the log it was writing is finished now), when a flight or logging session ends, and when the API asks. A flight ending is read from `MAV_SYS_STATUS_LOGGING` in `SYS_STATUS`, which PX4 v1.16 and newer raise only while the logger is actually writing — this is what catches logging that runs past disarm, or that never involved arming at all (`SDLOG_MODE`). Firmware that predates the bit falls back to the disarm transition; ArduPilot raises the bit whenever logging is merely configured, so there it is ignored and the disarm transition is the trigger. Each trigger buys a short burst of listings a few seconds apart — two must agree on a log's size before it counts — and then the loop goes back to sleep.
+
+Two further guards fall out of the same idea. A log is only considered at all once two consecutive listings agree on its size, so the log being written right now is never fetched at a size it will not keep. And if a single listing turns up more than `download.max_auto_queue` new logs, that is a card logloader has not seen rather than a flight that just happened, so it queues only the newest and says so.
+
+Downloading and uploading are suspended while the vehicle is armed, and uploads only touch the network while something is pending — a server that is unreachable is probed at most once a minute until it answers, and one that answers 401/403 is left alone for five minutes at a time, since re-posting a whole log just to be told no again helps nobody.
+
+### HTTP API
+
+A small localhost API on port 3005 (`[api]` in the config) is what the ARK-OS Logs page talks to.
+
+| | |
+| --- | --- |
+| `GET /status` | connection, arm and logging state, current transfer |
+| `GET /logs` | every known log with its download and upload state |
+| `GET /events` | the same as server-sent events, one per change |
+| `POST /refresh` | list the vehicle again now, since nothing polls |
+| `POST /logs/download` | `{"ids": [1,2]}` or `{"all": true}`; `"upload": false` to fetch without uploading |
+| `POST /logs/upload` | `{"ids": [1,2]}` or `{"all": true}`, optional `"targets": ["local"]` |
+| `POST /logs/cancel` | `{"ids": [1,2]}` — clears pending requests |
+| `DELETE /logs/{id}/file` | removes the downloaded copy to free space |
+
+A successful upload records the path Flight Review redirected to (`/plot_app?log=<uuid>`), which is what lets the UI link straight to the plot.
+
+### Log transport
+
+Everything runs over **MAVLink FTP** (`FILE_TRANSFER_PROTOCOL`, msg 110): the directory listing that finds the logs and the bulk transfer that downloads them. The classic log protocol (`LOG_REQUEST_LIST` / `LOG_ENTRY` / `LOG_DATA`, msgs 117-120) is not used at all.
+
+`FILE_TRANSFER_PROTOCOL` carries `target_system` and `target_component`, and both PX4 and ArduPilot address their replies back to the requesting sysid/compid, so a download is unicast between the vehicle and logloader. `LOG_DATA` has no target fields, which leaves a router in between — mavlink-router, for instance — no choice but to copy every chunk to every endpoint it serves, telemetry radio included. A log download over the old protocol saturates links that have no interest in it.
+
+The autopilot's MAVLink instance must have FTP enabled (`mavlink start -x` on PX4). If it does not, logloader says so and idles.
+
+### Log discovery
+
+logloader lists the vehicle's log directory, trying `@MAV_LOG` first — the virtual log directory the MAVLink FTP specification defines, supported by PX4 v1.17 and newer — then the physical `/fs/microsd/log` (PX4), `/APM/LOGS` (ArduPilot) and `/log` (PX4 SITL). Set `download.remote_directory` to skip the probe.
+
+The listing is what identifies a log: its path below the log root plus its size. PX4's nested `<date>/<time>.ulg` layout and ArduPilot's flat `<number>.BIN` layout are both handled.
+
+Timestamps come from the modification time in the listing when the vehicle supports the `ListDirectoryWithTime` opcode (PX4 v1.17 and newer). Otherwise PX4 logs fall back to the start time encoded in the path, and ArduPilot logs have no timestamp — nothing depends on having one.
+
+Downloads are staged in a temporary directory and only moved next to the finished logs once the transferred size matches the listing, so a partial file is never mistaken for a complete one.
+
+`.BIN` files are not accepted by review.px4.io, so on ArduPilot leave the remote target disabled or point it somewhere that understands dataflash logs.
+
+### Upgrading from a pre-FTP logloader
+
+Older versions kept a database per server and identified logs by the timestamp `LOG_ENTRY` reported, which MAVLink FTP cannot reproduce. On first start `local_server.db` and `remote_server.db` are imported into a single `logloader.db` and their rows matched against the FTP listing by size, so logs already downloaded and uploaded are not fetched or uploaded a second time. The old files are left untouched.
+
+### Configuration
+
+`config.toml`, in full, is documented inline in the shipped file. The keys:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `connection_url` | `udp://:14551` | MAVSDK connection string |
+| `log_level` | `info` | `error`, `warn`, `info` or `debug` |
+| `data.directory` | `$XDG_DATA_HOME/ark/logloader/` | Logs and the database |
+| `api.enabled` / `api.bind` / `api.port` | `true` / `127.0.0.1` / `3005` | Local HTTP API |
+| `download.auto` | `true` | Queue logs that appear while running |
+| `download.latest_on_first_start` | `true` | On a fresh database, take only the newest |
+| `upload.auto` | `true` | Upload what was queued automatically |
+| `download.max_auto_queue` | `5` | Bulk-discovery guard; 0 disables |
+| `download.remote_directory` | `""` | Override the vehicle log directory |
+| `download.use_burst` | `true` | FTP burst reads |
+| `upload.interval` | `10` | Seconds between upload passes |
+| `upload_local.*` | enabled, `http://127.0.0.1:5006` | Flight Review on the companion |
+| `upload_remote.*` | disabled, `https://review.px4.io` | `url`, `email`, `public`, `api_key` |
+
+Tables are one level deep on purpose: ARK-OS's config editor renders exactly that, and a setting an operator cannot reach from the web UI may as well not exist.
+
+The flat keys the previous layout used (`local_server`, `remote_server`, `upload_enabled`, `public_logs`, `email`, `remote_api_key`, `remote_log_directory`, `ftp_use_burst`, `application_directory`) are still read, so an existing config keeps working.
 
 ### Build
-Install dependencies
+
 ```
 sudo apt-get install libsqlite3-dev
 ```
-Install MAVSDK if you haven't already, the latest releases can be found at https://github.com/mavlink/MAVSDK/releases
+Install MAVSDK if you haven't already; releases are at https://github.com/mavlink/MAVSDK/releases
 ```
-sudo dpkg -i libmavsdk-dev_2.4.1_debian12_arm64.deb
+sudo dpkg -i libmavsdk-dev_3.17.1_ubuntu24.04_amd64.deb
 ```
-Or install MAVSDK from source
-```
-git clone --recurse-submodules https://github.com/mavlink/MAVSDK.git
-cd MAVSDK
-cmake -Bbuild/default -DCMAKE_BUILD_TYPE=Release -H.
-sudo cmake --build build/default -j$(nproc) --target install
-cd ..
-```
-Upgrade OpenSSL if your version is less than 3.0.2
-```
-openssl version
-```
-A script is provided for your convenience
-```
-./install_openssl.sh
-```
+OpenSSL must be 3.0.2 or newer (`openssl version`); `./install_openssl.sh` is provided if it is not.
 
-Clone this repository
 ```
 git clone --recurse-submodules https://github.com/ARK-Electronics/logloader.git
 cd logloader
 make
 ```
 
+`make` builds Release. `make debug` builds with debug symbols and no optimisation; the log level is a runtime setting either way. `make format` runs astyle and `make check-format` fails if anything needs it — the build itself never rewrites your sources.
+
+### Tests
+
+```
+cmake -B build -DBUILD_TESTING=ON && cmake --build build && ctest --test-dir build
+```
+
+`tests/test_log_database.cpp` covers the database, which is where every decision about a log is recorded: the first-index rule, logs appearing and disappearing from the vehicle, request and cancel, recovery when a downloaded file goes missing, ArduPilot's name reuse, and the upgrade from a pre-FTP database — which runs once against real user data and cannot be un-run.
+
 ### Run
+
 ```bash
-./build/logloader | tee output.txt
+./build/logloader --config config.toml
 ```
 
 ```
-Downloading...	2023-10-05T15:06:42Z	0.97249500MB	100%	3889.98000000 Kbps
-Downloading...	2023-10-05T15:06:58Z	0.46985700MB	98%	3686.40000000 Kbps
-Downloading...	2023-10-05T15:10:56Z0 Kb1.86199000MB	100%	4965.30666667 Kbps
-Downloading...	2023-10-07T08:52:14Z	0.38373500MB	100%	inf Kbps
-Downloading...	2023-10-07T08:56:18Z	0.26428000MB	100%	inf Kbps
-Downloading...	2023-10-07T09:04:18Z	0.42428500MB	100%	3394.28000000 Kbps
-Downloading...	2023-10-07T09:04:40Z	0.91263600MB	100%	7301.08800000 Kbps
-Downloading...	2023-10-07T09:05:20Z	1.33783000MB	100%	3567.54666667 Kbps
-Downloading...	2023-10-07T09:07:32Z	0.85526800MB	100%	3421.07200000 Kbps
-Downloading...	2023-10-07T09:22:00Z	0.82437500MB	100%	6595.00000000 Kbps
-Downloading...	2023-10-07T09:22:26Z	0.79509800MB	100%	6360.78400000 Kbps
-Downloading...	2023-10-07T09:26:10Z	0.88394300MB	100%	3535.77200000 Kbps
-Downloading...	2023-10-07T10:14:00Z	10.71558000MB	100%	2449.27542857 Kbps
-Downloading...	2023-10-07T12:03:40Z	0.64674900MB	100%	5173.99200000 Kbps
-Downloading...	2023-10-07T12:05:04Z	3.79014100MB	100%	3032.11280000 Kbps
-Downloading...	2023-10-07T12:14:46Z	2.24213400MB	100%	2989.51200000 Kbps
-Downloading...	2023-10-07T12:50:12Z	0.78112200MB	100%	3124.48800000 Kbps
+logloader starting, configuration from config.toml
+API listening on 127.0.0.1:3005
+Connected to the autopilot
+MAVLink FTP available, indexed 6 logs in /fs/microsd/log
+First index: 5 logs on the vehicle, queueing only the newest. Use the ARK-OS Logs page to fetch any of the others.
+Downloading 1/1: 2026-07-28/17_21_01.ulg (1.1 MB)
+Downloaded 2026-07-28/17_21_01.ulg in 1.5s (691.4 kB/s)
+Uploaded 2026-07-28/17_21_01.ulg to local: http://127.0.0.1:5006/plot_app?log=95699be6-...
+```
+
+### Testing against PX4 SITL
+
+SITL keeps its logs in `/log` relative to the working directory, which is in the probe list, so no configuration is needed beyond the port:
+
+```
+PX4_SIM_MODEL=none build/px4_sitl_default/bin/px4 build/px4_sitl_default/etc \
+    -s build/px4_sitl_default/etc/init.d-posix/rcS -d
+./build/logloader --config <config with connection_url = "udp://:14540">
 ```
 
 ### Install
-Build and install
+
 ```
 make install
 ```
@@ -78,17 +150,6 @@ make install
 | **Data directory**   | `~/.local/share/ark/logloader/`        |
 | **Logs directory**   | `~/.local/share/ark/logloader/logs/`   |
 
-### Performance
-Monitor network traffic
-```
-sudo iftop -i wlo1
-```
-Or use a Wireshark filter
-```
-mavlink_proto.msgid == 117 || mavlink_proto.msgid == 118 || mavlink_proto.msgid == 119 || mavlink_proto.msgid == 120
-```
-
-Watch your beautiful logs arrive
-
 ### Future developments
-- Multiple backends: e.g. RobotoAI, DroneLogbook, Auterion Suite, Aloft etc
+- Resume interrupted transfers rather than restarting them.
+- Multiple backends: e.g. RobotoAI, DroneLogbook, Auterion Suite, Aloft.

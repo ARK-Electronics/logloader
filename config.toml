@@ -1,6 +1,63 @@
+# MAVSDK connection to the autopilot. The link must have MAVLink FTP enabled
+# (PX4: "mavlink start -x").
 connection_url = "udp://:14551"
-local_server = "http://127.0.0.1:5006"
-remote_server = "https://review.px4.io"
+
+# error | warn | info | debug
+log_level = "info"
+
+[data]
+# Where logs and the database live. Empty uses $XDG_DATA_HOME/ark/logloader/.
+directory = ""
+
+# Local HTTP API. ARK-OS talks to this to list logs and ask for particular ones.
+[api]
+enabled = true
+bind = "127.0.0.1"
+port = 3005
+
+[download]
+# Fetch a log as soon as it appears, which in practice means after a flight.
+auto = true
+
+# On a database that has never seen this vehicle, every log looks new. Rather
+# than pull an entire SD card the first time logloader runs, take only the most
+# recent one. Everything else is available from the ARK-OS Logs page.
+latest_on_first_start = true
+
+# If one listing turns up more new logs than this, it is a card we have not seen
+# rather than a flight that just happened: queue only the newest and leave the
+# rest to the operator. 0 disables the guard.
+max_auto_queue = 5
+
+# Vehicle log directory. Empty probes "@MAV_LOG" (the virtual log directory from
+# the MAVLink FTP specification), then "/fs/microsd/log" (PX4) and "/APM/LOGS"
+# (ArduPilot).
+remote_directory = ""
+
+# FTP burst reads. Much faster; disable if the flight stack's burst support
+# misbehaves.
+use_burst = true
+
+[upload]
+# Upload whatever was fetched automatically. Turn this off to download after a
+# flight but upload only on request.
+auto = true
+
+# Seconds between upload passes.
+interval = 10
+
+# Flight Review running on this companion. Left open, so no key is needed.
+[upload_local]
+enabled = true
+url = "http://127.0.0.1:5006"
+public = true
+
+[upload_remote]
+enabled = false
+url = "https://review.px4.io"
 email = ""
-upload_enabled = false
-public_logs = false
+public = false
+
+# Per-account key for an authenticated Flight Review. When empty no
+# authorization headers are sent at all, which is what open servers expect.
+api_key = ""
