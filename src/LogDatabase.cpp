@@ -175,10 +175,9 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 		return result;
 	}
 
-	// The listing is complete (a partial one fails the whole refresh), so
-	// anything it does not mention is gone from the vehicle.
-	sqlite::execute(_db, "UPDATE logs SET present = 0");
-
+	// Counted before the wipe below, or it is always zero and the changed-index
+	// check at the bottom degenerates: every identical listing looks like a
+	// change and an emptied card looks like no change at all.
 	int64_t present_before = 0;
 	{
 		sqlite::Statement stmt(_db, "SELECT COUNT(*) FROM logs WHERE present = 1");
@@ -187,6 +186,10 @@ LogDatabase::SyncResult LogDatabase::sync_index(const std::vector<Discovered>& l
 			present_before = stmt.column_int(0);
 		}
 	}
+
+	// The listing is complete (a partial one fails the whole refresh), so
+	// anything it does not mention is gone from the vehicle.
+	sqlite::execute(_db, "UPDATE logs SET present = 0");
 
 	const int64_t discovered_at = now_epoch();
 

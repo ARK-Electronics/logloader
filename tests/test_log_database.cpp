@@ -372,6 +372,29 @@ void write_legacy_database(const fs::path& file, const std::vector<std::tuple<st
 	sqlite3_close(db);
 }
 
+void the_revision_moves_only_when_the_index_changes()
+{
+	Workspace workspace;
+	LogDatabase database(workspace.db(), workspace.logs(), kTargets);
+
+	database.sync_index({px4("2026-07-28/10_00_00.ulg", 100, 1785276000)});
+	const uint64_t after_insert = database.revision();
+
+	// An identical listing, which is what most of them are, is not a change.
+	database.sync_index({px4("2026-07-28/10_00_00.ulg", 100, 1785276000)});
+	CHECK(database.revision() == after_insert);
+
+	// A card wiped clean is very much a change: the streams must hear that
+	// every log is gone.
+	database.sync_index({});
+	CHECK(database.revision() > after_insert);
+
+	// And so is the card coming back, even though no row is inserted.
+	const uint64_t after_wipe = database.revision();
+	database.sync_index({px4("2026-07-28/10_00_00.ulg", 100, 1785276000)});
+	CHECK(database.revision() > after_wipe);
+}
+
 void the_upgrade_does_not_refetch_or_reupload()
 {
 	Workspace workspace;
@@ -416,6 +439,13 @@ void the_upgrade_does_not_refetch_or_reupload()
 
 	// The other target never had these logs.
 	CHECK(!already_done->uploads.at("remote").uploaded);
+
+	// Nothing the import adopted may carry intent: a fleet's worth of merely
+	// downloaded logs queuing for upload on upgrade is exactly the flood the
+	// import exists to avoid.
+	CHECK(database.logs_to_download().empty());
+	CHECK(database.logs_to_upload("local").empty());
+	CHECK(database.logs_to_upload("remote").empty());
 }
 
 void the_upgrade_runs_once()
@@ -516,6 +546,7 @@ int main()
 	failure_counts_order_the_download_queue();
 	ardupilot_name_reuse_does_not_overwrite();
 	ids_for_everything_respect_target_state();
+	the_revision_moves_only_when_the_index_changes();
 
 	an_older_schema_is_migrated();
 	the_upgrade_does_not_refetch_or_reupload();
