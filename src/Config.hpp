@@ -46,7 +46,6 @@ struct Config {
 	// only the newest and leave the rest to the operator. 0 disables the guard.
 	int max_auto_queue {5};
 
-	int index_interval_s {30};
 	int upload_interval_s {10};
 
 	// Empty probes the known vehicle log directories.

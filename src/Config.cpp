@@ -134,7 +134,6 @@ Config load_config(const std::string& path)
 		download["latest_on_first_start"].value_or(config.download_latest_on_first_start);
 	config.auto_upload = value_or<bool>(upload["auto"], download["auto_upload"], config.auto_upload);
 	config.max_auto_queue = download["max_auto_queue"].value_or(config.max_auto_queue);
-	config.index_interval_s = std::max(1, download["index_interval"].value_or(config.index_interval_s));
 	config.upload_interval_s = std::max(1, upload["interval"].value_or(config.upload_interval_s));
 	config.remote_log_directory =
 		value_or<std::string>(download["remote_directory"], file["remote_log_directory"], "");
@@ -150,7 +149,7 @@ Config load_config(const std::string& path)
 	config.local.api_key = trim(local["api_key"].value_or<std::string>(""));
 
 	config.remote.name = kTargetRemote;
-	config.remote.url = value_or<std::string>(remote["url"], file["remote_server"], "https://logs.px4.io");
+	config.remote.url = value_or<std::string>(remote["url"], file["remote_server"], "https://review.px4.io");
 	config.remote.enabled = value_or<bool>(remote["enabled"], file["upload_enabled"], false);
 	config.remote.public_logs = value_or<bool>(remote["public"], file["public_logs"], false);
 	config.remote.email = value_or<std::string>(remote["email"], file["email"], "");

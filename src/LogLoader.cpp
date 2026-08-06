@@ -19,7 +19,18 @@ namespace
 // that is having a bad day.
 constexpr int kMaxConsecutiveUploadRetries = 3;
 
+// Listing passes a trigger buys, and the gap between them. A log only counts
+// once two consecutive listings agree on its size, so anything under two would
+// never see a new log; three gives the one being closed a chance to settle.
+constexpr int kStabilityPasses = 3;
 constexpr auto kFastIndexInterval = std::chrono::seconds(5);
+
+// Nothing is listed on this tick unless a trigger flag was left set; it exists
+// so a lost wakeup costs a minute rather than forever.
+constexpr auto kIdleInterval = std::chrono::seconds(60);
+
+// The logger needs a moment to close the file after the flight ends.
+constexpr auto kSettleDelay = std::chrono::seconds(3);
 
 std::string human_size(uintmax_t bytes)
 {
@@ -56,8 +67,12 @@ LogLoader::~LogLoader()
 
 	// Drop the MAVSDK plugins while everything they might call back into is
 	// still alive. Member destruction alone would do this in the right order,
-	// but only by accident of declaration order.
+	// but only by accident of declaration order. ~Mavsdk joins the callback
+	// threads, so after it no subscription fires again; until then a straggler
+	// only touches atomics, the status board and the waiters, which are all
+	// destroyed after this body.
 	_ftp.reset();
+	_passthrough.reset();
 	_telemetry.reset();
 	_mavsdk.reset();
 }
@@ -109,13 +124,32 @@ void LogLoader::stop()
 
 void LogLoader::wake()
 {
-	_index_waiter.wake();
+	// One pass: a request through the API names logs the database already
+	// trusts, so there is no stability to wait out.
+	trigger_index(1);
 	_upload_waiter.wake();
+}
+
+void LogLoader::request_refresh()
+{
+	// Two: a log that appeared since the last event needs a second listing to
+	// agree on its size before it exists at all.
+	trigger_index(2);
+}
+
+void LogLoader::trigger_index(int passes)
+{
+	int current = _index_passes.load();
+
+	while (current < passes && !_index_passes.compare_exchange_weak(current, passes)) {
+	}
+
+	_index_waiter.wake();
 }
 
 bool LogLoader::armed()
 {
-	return _telemetry && _telemetry->armed();
+	return _armed.load();
 }
 
 bool LogLoader::connect()
@@ -149,7 +183,13 @@ bool LogLoader::connect()
 
 		LOG("Connected to the autopilot");
 
-		_telemetry = std::make_shared<mavsdk::Telemetry>(system.value());
+		// Before the subscriptions exist: the disconnect callback dedupes on
+		// _connected, so it must already be true for a drop arriving during the
+		// rest of this function to register.
+		_connected = true;
+		_status->set_connected(true);
+
+		install_subscriptions(system.value());
 
 		FtpLogFetcher::Settings settings = {
 			.temp_directory = _config.data_directory + "tmp/",
@@ -175,11 +215,113 @@ bool LogLoader::connect()
 
 		_ftp->reset_sessions();
 
-		_status->set_connected(true);
+		trigger_index(kStabilityPasses);
 		return true;
 	}
 
 	return false;
+}
+
+void LogLoader::install_subscriptions(std::shared_ptr<mavsdk::System> system)
+{
+	_telemetry = std::make_shared<mavsdk::Telemetry>(system);
+	_passthrough = std::make_shared<mavsdk::MavlinkPassthrough>(system);
+
+	_telemetry->subscribe_armed([this](bool armed) {
+		if (_armed.exchange(armed) == armed) {
+			return;
+		}
+
+		_status->set_armed(armed);
+		on_activity_changed();
+	});
+
+	// The id is copied rather than read through the plugin: MAVSDK removes a
+	// handler asynchronously, so a queued callback can outlive it (see
+	// FtpListClient::State).
+	const uint8_t autopilot_sysid = _passthrough->get_target_sysid();
+
+	_passthrough->subscribe_message(MAVLINK_MSG_ID_HEARTBEAT,
+	[this, autopilot_sysid](const mavlink_message_t& message) {
+		if (message.sysid != autopilot_sysid || message.compid != MAV_COMP_ID_AUTOPILOT1) {
+			return;
+		}
+
+		mavlink_heartbeat_t heartbeat;
+		mavlink_msg_heartbeat_decode(&message, &heartbeat);
+		_is_px4 = heartbeat.autopilot == MAV_AUTOPILOT_PX4;
+	});
+
+	_passthrough->subscribe_message(MAVLINK_MSG_ID_SYS_STATUS,
+	[this, autopilot_sysid](const mavlink_message_t& message) {
+		if (message.sysid != autopilot_sysid || message.compid != MAV_COMP_ID_AUTOPILOT1) {
+			return;
+		}
+
+		mavlink_sys_status_t sys_status;
+		mavlink_msg_sys_status_decode(&message, &sys_status);
+
+		// PX4 raises the bit only while the logger is actually writing (v1.16
+		// and newer; older firmware never sets it and falls back to the armed
+		// transition below). ArduPilot raises it whenever logging is configured
+		// at all, which would pin the vehicle active forever, so only PX4's is
+		// trusted.
+		const bool logging = _is_px4.load()
+				     && (sys_status.onboard_control_sensors_enabled & MAV_SYS_STATUS_LOGGING);
+
+		if (_logging.exchange(logging) == logging) {
+			return;
+		}
+
+		_status->set_logging(logging);
+		on_activity_changed();
+	});
+
+	system->subscribe_is_connected([this](bool connected) {
+		if (_connected.exchange(connected) == connected) {
+			return;
+		}
+
+		_status->set_connected(connected);
+
+		if (connected) {
+			LOG("Autopilot reconnected");
+			_reconnected = true;
+			_index_waiter.wake();
+			return;
+		}
+
+		LOG_WARN("Autopilot connection lost");
+		// Telemetry is stale from here on. A vehicle that vanished while armed
+		// must not leave transfers paused forever, nor read as a flight ending
+		// and trigger a check against a link that is gone.
+		_armed = false;
+		_logging = false;
+		_activity_active = false;
+		_status->set_armed(false);
+		_status->set_logging(false);
+		_status->set_ftp(false, "");
+	});
+}
+
+void LogLoader::on_activity_changed()
+{
+	const bool active = _armed.load() || _logging.load();
+
+	if (_activity_active.exchange(active) == active) {
+		return;
+	}
+
+	if (active) {
+		// Pause promptly rather than at the end of the current pass.
+		_index_waiter.wake();
+		return;
+	}
+
+	if (_connected.load()) {
+		_activity_settled = true;
+		_index_waiter.wake();
+	}
 }
 
 void LogLoader::run()
@@ -201,46 +343,47 @@ void LogLoader::run()
 void LogLoader::index_loop()
 {
 	while (!_index_waiter.stopped()) {
-		const bool is_armed = armed();
-
-		if (is_armed != _was_armed) {
-			_was_armed = is_armed;
-			_status->set_armed(is_armed);
-
-			if (!is_armed) {
-				// The logger needs a moment to close the file it was writing.
-				LOG("Vehicle disarmed, looking for a new log");
-				_fast_index_passes = 3;
-
-				if (_index_waiter.wait(std::chrono::seconds(3))) {
-					break;
-				}
-			}
-		}
-
-		if (is_armed) {
-			// Downloading competes with the logger for the SD card.
-			if (_index_waiter.wait(std::chrono::seconds(1))) {
+		if (_armed.load()) {
+			// Transfers compete with the logger for the SD card. The disarm
+			// callback wakes the loop; owed passes keep until then.
+			if (_index_waiter.wait(kIdleInterval)) {
 				break;
 			}
 
 			continue;
 		}
 
-		if (const auto sync = refresh_index(); sync.has_value()) {
-			apply_auto_policy(sync.value());
-			download_pending();
+		if (_activity_settled.exchange(false)) {
+			LOG("Flight finished, looking for a new log");
+
+			if (_index_waiter.wait(kSettleDelay)) {
+				break;
+			}
+
+			trigger_index(kStabilityPasses);
 		}
 
-		const auto interval = _fast_index_passes > 0
-				      ? kFastIndexInterval
-				      : std::chrono::seconds(_config.index_interval_s);
-
-		if (_fast_index_passes > 0) {
-			_fast_index_passes--;
+		if (_reconnected.exchange(false)) {
+			// A rebooted vehicle may hold a stale FTP session open, and the
+			// log it was writing when it went away is finished now.
+			_ftp->reset_sessions();
+			trigger_index(kStabilityPasses);
 		}
 
-		if (_index_waiter.wait(interval)) {
+		if (_connected.load() && _index_passes.load() > 0) {
+			if (const auto sync = refresh_index(); sync.has_value()) {
+				apply_auto_policy(sync.value());
+				download_pending();
+			}
+
+			_index_passes--;
+		}
+
+		// Owed passes wait out a disconnect rather than burning down against a
+		// vehicle that cannot answer.
+		const bool busy = _connected.load() && _index_passes.load() > 0;
+
+		if (_index_waiter.wait(busy ? kFastIndexInterval : kIdleInterval)) {
 			break;
 		}
 	}

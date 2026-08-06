@@ -12,9 +12,11 @@ The rule is:
 - **On a database that has never seen this vehicle**, only the most recent log is taken. Everything else is left alone.
 - **Anything else happens because it was asked for**, from the ARK-OS Logs page or the HTTP API below.
 
+The vehicle is never polled. It is listed on exactly three occasions: when the connection to the autopilot comes up (or comes back — a reboot means the log it was writing is finished now), when a flight or logging session ends, and when the API asks. A flight ending is read from `MAV_SYS_STATUS_LOGGING` in `SYS_STATUS`, which PX4 v1.16 and newer raise only while the logger is actually writing — this is what catches logging that runs past disarm, or that never involved arming at all (`SDLOG_MODE`). Firmware that predates the bit falls back to the disarm transition; ArduPilot raises the bit whenever logging is merely configured, so there it is ignored and the disarm transition is the trigger. Each trigger buys a short burst of listings a few seconds apart — two must agree on a log's size before it counts — and then the loop goes back to sleep.
+
 Two further guards fall out of the same idea. A log is only considered at all once two consecutive listings agree on its size, so the log being written right now is never fetched at a size it will not keep. And if a single listing turns up more than `download.max_auto_queue` new logs, that is a card logloader has not seen rather than a flight that just happened, so it queues only the newest and says so.
 
-Downloading and uploading are suspended while the vehicle is armed.
+Downloading and uploading are suspended while the vehicle is armed, and uploads only touch the network while something is pending — a server that is unreachable is probed at most once a minute until it answers.
 
 ### HTTP API
 
@@ -22,9 +24,10 @@ A small localhost API on port 3005 (`[api]` in the config) is what the ARK-OS Lo
 
 | | |
 | --- | --- |
-| `GET /status` | connection, arm state, current transfer |
+| `GET /status` | connection, arm and logging state, current transfer |
 | `GET /logs` | every known log with its download and upload state |
 | `GET /events` | the same as server-sent events, one per change |
+| `POST /refresh` | list the vehicle again now, since nothing polls |
 | `POST /logs/download` | `{"ids": [1,2]}` or `{"all": true}`; `"upload": false` to fetch without uploading |
 | `POST /logs/upload` | `{"ids": [1,2]}` or `{"all": true}`, optional `"targets": ["local"]` |
 | `POST /logs/cancel` | `{"ids": [1,2]}` — clears pending requests |
@@ -70,12 +73,11 @@ Older versions kept a database per server and identified logs by the timestamp `
 | `download.latest_on_first_start` | `true` | On a fresh database, take only the newest |
 | `upload.auto` | `true` | Upload what was queued automatically |
 | `download.max_auto_queue` | `5` | Bulk-discovery guard; 0 disables |
-| `download.index_interval` | `30` | Seconds between listings |
 | `download.remote_directory` | `""` | Override the vehicle log directory |
 | `download.use_burst` | `true` | FTP burst reads |
 | `upload.interval` | `10` | Seconds between upload passes |
 | `upload_local.*` | enabled, `http://127.0.0.1:5006` | Flight Review on the companion |
-| `upload_remote.*` | disabled, `https://logs.px4.io` | `url`, `email`, `public`, `api_key` |
+| `upload_remote.*` | disabled, `https://review.px4.io` | `url`, `email`, `public`, `api_key` |
 
 Tables are one level deep on purpose: ARK-OS's config editor renders exactly that, and a setting an operator cannot reach from the web UI may as well not exist.
 

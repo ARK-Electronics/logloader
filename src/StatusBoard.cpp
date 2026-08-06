@@ -27,6 +27,13 @@ void StatusBoard::set_armed(bool armed)
 	bump();
 }
 
+void StatusBoard::set_logging(bool logging)
+{
+	std::lock_guard<std::mutex> lock(_mutex);
+	_snapshot.logging = logging;
+	bump();
+}
+
 void StatusBoard::set_ftp(bool available, const std::string& log_root)
 {
 	std::lock_guard<std::mutex> lock(_mutex);

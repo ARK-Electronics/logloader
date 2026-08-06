@@ -20,6 +20,8 @@ public:
 	struct Snapshot {
 		bool connected {false};
 		bool armed {false};
+		// The vehicle's logger is writing right now (PX4 v1.16+ report it).
+		bool logging {false};
 		bool ftp_available {false};
 		std::string log_root;
 
@@ -38,6 +40,7 @@ public:
 
 	void set_connected(bool connected);
 	void set_armed(bool armed);
+	void set_logging(bool logging);
 	void set_ftp(bool available, const std::string& log_root);
 	void set_download(int64_t id, uint32_t transferred, uint32_t total);
 	void set_upload(int64_t id, const std::string& target);

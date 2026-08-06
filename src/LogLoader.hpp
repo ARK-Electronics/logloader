@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include <mavsdk/mavsdk.h>
+#include <mavsdk/plugins/mavlink_passthrough/mavlink_passthrough.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 
 #include "Config.hpp"
@@ -24,6 +26,10 @@
 // Two loops run concurrently. The index loop talks to the vehicle and owns the
 // downloads; the upload loop talks to the servers. They share nothing but the
 // database, which is its own monitor.
+//
+// The vehicle is never polled. The index loop sits idle until an event says the
+// listing may have changed: the connection to the autopilot coming (back) up, a
+// flight or logging session ending, or a request through the API.
 class LogLoader
 {
 public:
@@ -47,8 +53,12 @@ public:
 	StatusBoard& status() { return *_status; }
 
 	// Nudges both loops, so a request made through the API is acted on now
-	// rather than at the end of the current interval.
+	// rather than left for the next trigger.
 	void wake();
+
+	// Lists the vehicle again as soon as it is connected and disarmed. This is
+	// the API's refresh, and the only way the index moves without an event.
+	void request_refresh();
 
 	// Removes a downloaded file from disk and forgets it. Returns false when
 	// the log is unknown.
@@ -62,6 +72,20 @@ public:
 private:
 	void index_loop();
 	void upload_loop();
+
+	// Installs the armed, SYS_STATUS, heartbeat and connection-state callbacks
+	// that drive the index loop. They run on MAVSDK's threads and only touch
+	// members that outlive the plugins: atomics, the status board, the waiters.
+	void install_subscriptions(std::shared_ptr<mavsdk::System> system);
+
+	// Called when armed or logging changed. The active -> inactive edge is what
+	// schedules the post-flight check for a new log.
+	void on_activity_changed();
+
+	// Asks the index loop for at least this many listing passes. More than one,
+	// because a log is only trusted once two consecutive listings agree on its
+	// size.
+	void trigger_index(int passes);
 
 	// Reconciles the vehicle listing into the database. False when the vehicle
 	// could not be listed, in which case nothing is assumed about what it has.
@@ -88,6 +112,7 @@ private:
 
 	std::shared_ptr<mavsdk::Mavsdk> _mavsdk;
 	std::shared_ptr<mavsdk::Telemetry> _telemetry;
+	std::shared_ptr<mavsdk::MavlinkPassthrough> _passthrough;
 	// Assigned by connect() on the main thread and read by stop() on the signal
 	// thread, so it is not just a plain member.
 	std::mutex _ftp_mutex;
@@ -97,8 +122,22 @@ private:
 	Waiter _upload_waiter;
 	std::thread _upload_thread;
 
-	bool _was_armed {false};
-	// Index more often for a few passes after landing, so the log the flight
-	// just produced is confirmed stable and fetched promptly.
-	int _fast_index_passes {0};
+	// Written by MAVSDK callbacks, read by the loops.
+	std::atomic<bool> _connected {false};
+	std::atomic<bool> _armed {false};
+	std::atomic<bool> _logging {false};
+	// Only PX4's logging bit is trusted; see install_subscriptions.
+	std::atomic<bool> _is_px4 {false};
+
+	// armed || logging, kept so either callback can see the combined edge.
+	std::atomic<bool> _activity_active {false};
+	// The flight (or logging session) just ended; check for its log after
+	// giving the logger a moment to close the file.
+	std::atomic<bool> _activity_settled {false};
+	// The autopilot came back; its FTP session state is unknown and the log it
+	// was writing when it went away is finished now.
+	std::atomic<bool> _reconnected {false};
+	// Listing passes the index loop still owes. Consecutive passes are what
+	// prove a log's size has stopped changing.
+	std::atomic<int> _index_passes {0};
 };

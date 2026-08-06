@@ -29,9 +29,6 @@ latest_on_first_start = true
 # rest to the operator. 0 disables the guard.
 max_auto_queue = 5
 
-# Seconds between vehicle listings. Drops to 5s for a few passes after landing.
-index_interval = 30
-
 # Vehicle log directory. Empty probes "@MAV_LOG" (the virtual log directory from
 # the MAVLink FTP specification), then "/fs/microsd/log" (PX4) and "/APM/LOGS"
 # (ArduPilot).
@@ -57,7 +54,7 @@ public = true
 
 [upload_remote]
 enabled = false
-url = "https://logs.px4.io"
+url = "https://review.px4.io"
 email = ""
 public = false
 

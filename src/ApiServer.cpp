@@ -75,6 +75,7 @@ json to_json(const StatusBoard::Snapshot& snapshot)
 	return {
 		{"connected", snapshot.connected},
 		{"armed", snapshot.armed},
+		{"logging", snapshot.logging},
 		{"ftp_available", snapshot.ftp_available},
 		{"log_root", snapshot.log_root},
 		{"downloading_id", snapshot.downloading_id},
@@ -272,6 +273,13 @@ void ApiServer::install_routes()
 			return sink.write(message.data(), message.size());
 		},
 		[this](bool) { _streams--; });
+	});
+
+	// The vehicle is only ever listed on an event, so the UI needs a way to ask
+	// for one. Honoured as soon as the vehicle is connected and disarmed.
+	_server->Post("/refresh", [this](const httplib::Request&, httplib::Response & response) {
+		_loader.request_refresh();
+		response.set_content(json {{"refreshing", true}}.dump(), "application/json");
 	});
 
 	_server->Post("/logs/download", [this, &database](const httplib::Request & request, httplib::Response & response) {
